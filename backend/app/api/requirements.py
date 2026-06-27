@@ -241,7 +241,10 @@ async def analyze_requirements(
         project_description=project.description or "无",
         requirement_text=req_text,
     )
-    extract_result = await provider.complete(EXTRACTOR_SYSTEM_PROMPT, extractor_prompt)
+    try:
+        extract_result = await provider.complete(EXTRACTOR_SYSTEM_PROMPT, extractor_prompt)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI 需求分析失败: {str(e)}")
 
     if not extract_result.parsed_json:
         raise HTTPException(status_code=500, detail="AI 分析结果解析失败，请重试")
@@ -277,9 +280,12 @@ async def analyze_requirements(
         analysis["use_cases"] = []
 
     # Step 4: 图表规划 + 按需生成 PlantUML 图表
-    diagram_plan, diagrams = await _plan_and_generate_diagrams(
-        provider, project, analysis, analysis["use_cases"]
-    )
+    try:
+        diagram_plan, diagrams = await _plan_and_generate_diagrams(
+            provider, project, analysis, analysis["use_cases"]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI 需求分析失败: {str(e)}")
     analysis["diagram_plan"] = diagram_plan
     analysis["diagrams"] = diagrams
 
@@ -415,6 +421,18 @@ async def analyze_requirements(
         }
         req.analysis_result = req_analysis
         req.status = RequirementStatus.ANALYZED
+
+    # 兜底：未被匹配的原始需求也标记为已分析，存储完整分析结果
+    matched_req_ids = set()
+    for req in created_reqs.values():
+        if hasattr(req, 'id'):
+            matched_req_ids.add(req.id)
+
+    for req in requirements:
+        if req.id not in matched_req_ids and req.status == RequirementStatus.DRAFT:
+            # 原始需求存储完整的分析结果（包含所有提取的 FR/NFR/用例/图表等）
+            req.analysis_result = analysis
+            req.status = RequirementStatus.ANALYZED
 
     # 记录操作日志
     db.add(OperationLog(

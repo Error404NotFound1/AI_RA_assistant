@@ -463,6 +463,7 @@ export default function RequirementsPage() {
     requirements,
     isAnalyzing,
     analysisProgress,
+    analysisError,
     fetchRequirements,
     createRequirement,
     analyzeRequirements,
@@ -787,6 +788,19 @@ export default function RequirementsPage() {
               <div className="flex items-center gap-3">
                 <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
                 <span className="text-sm">{analysisProgress || "AI 正在分析需求..."}</span>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 分析错误提示 */}
+        {analysisError && !isAnalyzing && (
+          <Card className="border-destructive/20 bg-destructive/5">
+            <CardContent className="py-4">
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-red-500">
+                  {analysisProgress || "分析失败，请重试"}
+                </span>
               </div>
             </CardContent>
           </Card>

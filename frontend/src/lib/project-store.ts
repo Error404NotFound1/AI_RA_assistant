@@ -111,6 +111,7 @@ interface RequirementState {
   currentRequirement: Requirement | null;
   isAnalyzing: boolean;
   analysisProgress: string;
+  analysisError: boolean;
   useCases: UseCase[];
   fetchRequirements: (projectId: string) => Promise<void>;
   fetchRequirement: (projectId: string, reqId: string) => Promise<void>;
@@ -137,6 +138,7 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
   currentRequirement: null,
   isAnalyzing: false,
   analysisProgress: "",
+  analysisError: false,
   useCases: [],
 
   fetchRequirements: async (projectId) => {
@@ -177,7 +179,13 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
       await get().fetchRequirements(projectId);
       set({ analysisProgress: "", isAnalyzing: false });
     } catch {
-      set({ analysisProgress: "分析失败，请重试", isAnalyzing: false });
+      set({
+        analysisProgress: "分析失败，请重试",
+        isAnalyzing: false,
+        analysisError: true,
+      });
+      // 3秒后清除错误状态
+      setTimeout(() => set({ analysisError: false }), 3000);
     }
   },
 
