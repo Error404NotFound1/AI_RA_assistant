@@ -15,7 +15,10 @@ class OpenAIProvider(LLMProvider):
     def __init__(self):
         super().__init__()
         self.model = settings.OPENAI_MODEL
-        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        client_kwargs = {"api_key": settings.OPENAI_API_KEY}
+        if settings.OPENAI_BASE_URL:
+            client_kwargs["base_url"] = settings.OPENAI_BASE_URL
+        self.client = AsyncOpenAI(**client_kwargs)
 
     async def complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.3) -> LLMResponse:
         response = await self.client.chat.completions.create(

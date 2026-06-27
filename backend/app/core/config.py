@@ -48,6 +48,7 @@ class Settings:
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "deepseek")  # deepseek / openai
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+    OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "")
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
     DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     DEEPSEEK_BASE_URL: str = os.getenv(
