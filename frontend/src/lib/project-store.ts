@@ -1,7 +1,13 @@
 // 项目状态管理
 
 import { create } from "zustand";
-import { projectAPI, requirementAPI, architectureAPI } from "@/lib/api";
+import {
+  projectAPI,
+  requirementAPI,
+  architectureAPI,
+  documentAPI,
+  attachmentAPI,
+} from "@/lib/api";
 
 // ===== 项目 Store =====
 export interface Project {
@@ -89,11 +95,23 @@ export interface Requirement {
   created_at: string | null;
 }
 
+export interface UseCase {
+  id: string;
+  requirement_id: string;
+  title: string;
+  actor: string;
+  preconditions: string | null;
+  main_flow: string[] | null;
+  alternative_flows: string[] | null;
+  postconditions: string | null;
+}
+
 interface RequirementState {
   requirements: Requirement[];
   currentRequirement: Requirement | null;
   isAnalyzing: boolean;
   analysisProgress: string;
+  useCases: UseCase[];
   fetchRequirements: (projectId: string) => Promise<void>;
   fetchRequirement: (projectId: string, reqId: string) => Promise<void>;
   createRequirement: (
@@ -110,6 +128,7 @@ interface RequirementState {
     requirementIds?: string[]
   ) => Promise<void>;
   confirmRequirement: (projectId: string, reqId: string) => Promise<void>;
+  fetchUseCases: (projectId: string, reqId: string) => Promise<void>;
   setCurrentRequirement: (req: Requirement | null) => void;
 }
 
@@ -118,6 +137,7 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
   currentRequirement: null,
   isAnalyzing: false,
   analysisProgress: "",
+  useCases: [],
 
   fetchRequirements: async (projectId) => {
     try {
@@ -166,6 +186,15 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
     await get().fetchRequirement(projectId, reqId);
   },
 
+  fetchUseCases: async (projectId, reqId) => {
+    try {
+      const response = await requirementAPI.getUseCases(projectId, reqId);
+      set({ useCases: response.data });
+    } catch {
+      // 静默处理
+    }
+  },
+
   setCurrentRequirement: (req) => set({ currentRequirement: req }),
 }));
 
@@ -188,6 +217,10 @@ interface ArchitectureState {
   solutions: ArchitectureSolution[];
   currentSolution: ArchitectureSolution | null;
   isRecommending: boolean;
+  archDoc: string | null;
+  plantumlCode: string | null;
+  isGeneratingDoc: boolean;
+  isGeneratingPlantuml: boolean;
   fetchSolutions: (projectId: string) => Promise<void>;
   fetchSolution: (projectId: string, solutionId: string) => Promise<void>;
   recommendArchitecture: (
@@ -205,6 +238,8 @@ interface ArchitectureState {
     data: { title: string; context: string; decision: string; consequences?: string }
   ) => Promise<void>;
   autoMapTraceability: (projectId: string) => Promise<void>;
+  generateArchDoc: (projectId: string, solutionId: string) => Promise<string | null>;
+  generatePlantuml: (projectId: string, solutionId: string) => Promise<string | null>;
   setCurrentSolution: (solution: ArchitectureSolution | null) => void;
 }
 
@@ -212,6 +247,10 @@ export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
   solutions: [],
   currentSolution: null,
   isRecommending: false,
+  archDoc: null,
+  plantumlCode: null,
+  isGeneratingDoc: false,
+  isGeneratingPlantuml: false,
 
   fetchSolutions: async (projectId) => {
     try {
@@ -256,5 +295,177 @@ export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
     await architectureAPI.autoMapTraceability(projectId);
   },
 
+  generateArchDoc: async (projectId, solutionId) => {
+    set({ isGeneratingDoc: true });
+    try {
+      const response = await architectureAPI.generateArchDoc(projectId, solutionId);
+      const doc = response.data?.content ?? response.data ?? null;
+      set({ archDoc: typeof doc === "string" ? doc : JSON.stringify(doc, null, 2), isGeneratingDoc: false });
+      return typeof doc === "string" ? doc : JSON.stringify(doc, null, 2);
+    } catch {
+      set({ isGeneratingDoc: false });
+      return null;
+    }
+  },
+
+  generatePlantuml: async (projectId, solutionId) => {
+    set({ isGeneratingPlantuml: true });
+    try {
+      const response = await architectureAPI.generatePlantuml(projectId, solutionId);
+      const code = response.data?.plantuml ?? response.data?.content ?? null;
+      set({ plantumlCode: typeof code === "string" ? code : JSON.stringify(code, null, 2), isGeneratingPlantuml: false });
+      return typeof code === "string" ? code : JSON.stringify(code, null, 2);
+    } catch {
+      set({ isGeneratingPlantuml: false });
+      return null;
+    }
+  },
+
   setCurrentSolution: (solution) => set({ currentSolution: solution }),
+}));
+
+// ===== 文档 Store =====
+export interface DocumentItem {
+  id: string;
+  title: string;
+  doc_type: string;
+  version: number;
+  content?: string;
+  created_at: string | null;
+}
+
+interface DocumentState {
+  documents: DocumentItem[];
+  currentDocument: DocumentItem | null;
+  isGenerating: boolean;
+  isUpdating: boolean;
+  compareResult: { diff: string; v1?: unknown; v2?: unknown } | null;
+  fetchDocuments: (projectId: string) => Promise<void>;
+  generateDocument: (projectId: string) => Promise<void>;
+  fetchDocument: (projectId: string, docId: string) => Promise<void>;
+  updateDocument: (
+    projectId: string,
+    docId: string,
+    data: { content: string; title?: string }
+  ) => Promise<void>;
+  compareDocuments: (projectId: string, v1: string, v2: string) => Promise<void>;
+  exportDocument: (projectId: string, docId: string, format: string) => Promise<Blob | null>;
+}
+
+export const useDocumentStore = create<DocumentState>((set, get) => ({
+  documents: [],
+  currentDocument: null,
+  isGenerating: false,
+  isUpdating: false,
+  compareResult: null,
+
+  fetchDocuments: async (projectId) => {
+    try {
+      const response = await documentAPI.list(projectId);
+      set({ documents: response.data });
+    } catch {
+      // 静默处理
+    }
+  },
+
+  generateDocument: async (projectId) => {
+    set({ isGenerating: true });
+    try {
+      await documentAPI.generate(projectId);
+      await get().fetchDocuments(projectId);
+      set({ isGenerating: false });
+    } catch {
+      set({ isGenerating: false });
+    }
+  },
+
+  fetchDocument: async (projectId, docId) => {
+    try {
+      const response = await documentAPI.get(projectId, docId);
+      set({ currentDocument: response.data });
+    } catch {
+      // 静默处理
+    }
+  },
+
+  updateDocument: async (projectId, docId, data) => {
+    set({ isUpdating: true });
+    try {
+      await documentAPI.update(projectId, docId, data);
+      await get().fetchDocument(projectId, docId);
+      await get().fetchDocuments(projectId);
+      set({ isUpdating: false });
+    } catch {
+      set({ isUpdating: false });
+    }
+  },
+
+  compareDocuments: async (projectId, v1, v2) => {
+    try {
+      const response = await documentAPI.compare(projectId, v1, v2);
+      set({ compareResult: response.data });
+    } catch {
+      // 静默处理
+    }
+  },
+
+  exportDocument: async (projectId, docId, format) => {
+    try {
+      const response = await documentAPI.exportDoc(projectId, docId, format);
+      return response.data as Blob;
+    } catch {
+      return null;
+    }
+  },
+}));
+
+// ===== 附件 Store =====
+export interface Attachment {
+  id: string;
+  filename: string;
+  file_size: number;
+  file_type: string | null;
+  uploaded_at: string | null;
+}
+
+interface AttachmentState {
+  attachments: Attachment[];
+  isUploading: boolean;
+  fetchAttachments: (projectId: string) => Promise<void>;
+  uploadAttachment: (projectId: string, file: File) => Promise<void>;
+  deleteAttachment: (projectId: string, attachmentId: string) => Promise<void>;
+}
+
+export const useAttachmentStore = create<AttachmentState>((set, get) => ({
+  attachments: [],
+  isUploading: false,
+
+  fetchAttachments: async (projectId) => {
+    try {
+      const response = await attachmentAPI.list(projectId);
+      set({ attachments: response.data });
+    } catch {
+      // 静默处理
+    }
+  },
+
+  uploadAttachment: async (projectId, file) => {
+    set({ isUploading: true });
+    try {
+      await attachmentAPI.upload(projectId, file);
+      await get().fetchAttachments(projectId);
+      set({ isUploading: false });
+    } catch {
+      set({ isUploading: false });
+    }
+  },
+
+  deleteAttachment: async (projectId, attachmentId) => {
+    try {
+      await attachmentAPI.delete(projectId, attachmentId);
+      await get().fetchAttachments(projectId);
+    } catch {
+      // 静默处理
+    }
+  },
 }));

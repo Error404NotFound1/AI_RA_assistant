@@ -1,19 +1,24 @@
-// 需求分析与 AI 质量评估页面
+// 需求分析页面
 
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Plus,
   BrainCircuit,
   CheckCircle2,
-  AlertTriangle,
   FileText,
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Paperclip,
+  Trash2,
+  Download,
+  Loader2,
 } from "lucide-react";
+import MDEditor from "@uiw/react-md-editor";
+import plantumlEncoder from "plantuml-encoder";
 import { AppHeader } from "@/components/layout/app-header";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,7 +41,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -48,29 +52,53 @@ import {
 import {
   useProjectStore,
   useRequirementStore,
+  useAttachmentStore,
 } from "@/lib/project-store";
+import { attachmentAPI, requirementAPI } from "@/lib/api";
 
-// INCOSE 七大质量属性
-const INCOSE_ATTRIBUTES = [
-  { key: "completeness", label: "完整性", description: "需求是否包含所有必要信息" },
-  { key: "consistency", label: "一致性", description: "需求是否与其他需求矛盾" },
-  { key: "verifiability", label: "可验证性", description: "需求是否可被验证和测试" },
-  { key: "unambiguity", label: "无歧义性", description: "需求是否只有一种解释" },
-  { key: "traceability", label: "可追溯性", description: "需求是否可追溯到来源" },
-  { key: "feasibility", label: "可行性", description: "需求是否可在约束内实现" },
-  { key: "singularity", label: "单一性", description: "需求是否只描述一个功能" },
-];
+// 图表类型中文标签
+const diagramTypeLabels: Record<string, string> = {
+  use_case: "用例图",
+  use_case_diagram: "用例图",
+  activity: "活动图",
+  activity_diagram: "活动图",
+  sequence: "时序图",
+  sequence_diagram: "时序图",
+  state: "状态图",
+  state_diagram: "状态图",
+  class: "类图",
+  class_diagram: "类图",
+  dfd: "数据流图",
+  dfd_diagram: "数据流图",
+  er: "ER图",
+  er_diagram: "ER图",
+};
 
-function QualityScoreBar({ label, score, description }: { label: string; score: number | string; description: string }) {
-  const numericScore = typeof score === "number" ? score : parseInt(score) || 0;
+function PlantUMLDiagram({ code, title, type }: { code: string; title: string; type: string }) {
+  const [showSource, setShowSource] = useState(false);
+  const encoded = plantumlEncoder.encode(code);
+  const imageUrl = `https://www.plantuml.com/plantuml/img/${encoded}`;
+
   return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">{label}</span>
-        <span className="text-sm text-muted-foreground">{numericScore}/100</span>
+    <div className="border rounded-lg p-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary">{diagramTypeLabels[type] || type}</Badge>
+          <span className="font-medium">{title}</span>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => setShowSource(!showSource)}>
+          {showSource ? "隐藏源码" : "查看源码"}
+        </Button>
       </div>
-      <Progress value={numericScore} className="h-2" />
-      <p className="text-xs text-muted-foreground">{description}</p>
+      <div className="flex justify-center">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={imageUrl} alt={title} className="max-w-full" />
+      </div>
+      {showSource && (
+        <pre className="mt-2 p-2 bg-muted rounded text-xs overflow-x-auto">
+          <code>{code}</code>
+        </pre>
+      )}
     </div>
   );
 }
@@ -89,10 +117,13 @@ function AnalysisResultCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const analysis = requirement.analysis_result as {
-    user_stories?: Array<{ role: string; goal: string; benefit: string }>;
-    classification?: Record<string, string>;
-    quality?: Record<string, number>;
-    suggestions?: Record<string, string>;
+    intent_analysis?: { business_goal: string; domain: string; stakeholders: string[]; assumptions: string[] };
+    functional_requirements?: Array<{ id: string; title: string; description: string; type: string; source: string; rationale: string; sub_requirements?: string[]; inputs?: string[]; outputs?: string[]; business_rules?: string[]; data_entities?: string[] }>;
+    non_functional_requirements?: Array<{ id: string; title: string; description: string; category: string; source: string; rationale: string; quantitative_metric?: string; acceptance_threshold?: string; verification_method?: string }>;
+    user_stories?: Array<{ requirement_id: string; role: string; goal: string; benefit: string; acceptance_criteria?: string }>;
+    classification?: { classified_requirements: Array<{ id: string; priority: string; rationale: string }> };
+    use_cases?: Array<{ requirement_id: string; title: string; actor: string; preconditions: string; main_flow: string[]; alternative_flows: string[]; postconditions: string }>;
+    diagrams?: Record<string, string>;
   } | null;
 
   const getStatusBadge = (status: string) => {
@@ -144,6 +175,22 @@ function AnalysisResultCard({
       {expanded && analysis && (
         <CardContent className="space-y-4">
           <Separator />
+          {/* 意图分析 */}
+          {analysis.intent_analysis && (
+            <div className="rounded-md bg-blue-50 p-3 space-y-1">
+              <p className="text-sm font-medium">意图分析</p>
+              <p className="text-xs text-muted-foreground">业务目标：{analysis.intent_analysis.business_goal}</p>
+              {analysis.intent_analysis.domain && (
+                <p className="text-xs text-muted-foreground">业务领域：{analysis.intent_analysis.domain}</p>
+              )}
+              {analysis.intent_analysis.stakeholders && analysis.intent_analysis.stakeholders.length > 0 && (
+                <p className="text-xs text-muted-foreground">利益相关者：{analysis.intent_analysis.stakeholders.join("、")}</p>
+              )}
+              {analysis.intent_analysis.assumptions && analysis.intent_analysis.assumptions.length > 0 && (
+                <p className="text-xs text-muted-foreground">假设：{analysis.intent_analysis.assumptions.join("、")}</p>
+              )}
+            </div>
+          )}
           {/* AI 分析结果 */}
           {analysis.user_stories && (
             <div>
@@ -163,6 +210,11 @@ function AnalysisResultCard({
                         <strong> {story.goal}</strong>，以便
                         <strong> {story.benefit}</strong>
                       </p>
+                      {story.acceptance_criteria && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          验收标准：{story.acceptance_criteria}
+                        </p>
+                      )}
                     </div>
                   )
                 )}
@@ -170,55 +222,229 @@ function AnalysisResultCard({
             </div>
           )}
 
-          {analysis.classification && (
-            <div>
-              <h4 className="text-sm font-semibold mb-2">需求分类</h4>
-              <div className="flex gap-2 flex-wrap">
-                {analysis.classification &&
-                  Object.entries(analysis.classification).map(([key, val]) => (
-                    <Badge key={key} variant="secondary">
-                      {key}: {String(val)}
-                    </Badge>
-                  ))}
-              </div>
+          {/* 需求分类（MoSCoW） */}
+          {analysis.classification?.classified_requirements && analysis.classification.classified_requirements.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="font-semibold text-sm">需求分类（MoSCoW）</h4>
+              {(() => {
+                const reqs = analysis.classification.classified_requirements || [];
+                // classified_requirements 仅含 {id, priority, rationale}，需从 FR/NFR 交叉引用标题
+                const titleMap = new Map<string, string>();
+                (analysis.functional_requirements || []).forEach((fr) => {
+                  titleMap.set(fr.id, fr.title || fr.id);
+                });
+                (analysis.non_functional_requirements || []).forEach((nfr) => {
+                  titleMap.set(nfr.id, nfr.title || nfr.id);
+                });
+                // 兼容 "Won't" / "Wont" 两种写法
+                const isWont = (p: string) => p === "Won't" || p === "Wont";
+                const groups: Record<string, Array<{ id: string; priority: string; rationale: string }>> = {
+                  Must: reqs.filter((r) => r.priority === "Must"),
+                  Should: reqs.filter((r) => r.priority === "Should"),
+                  Could: reqs.filter((r) => r.priority === "Could"),
+                  "Won't": reqs.filter((r) => isWont(r.priority)),
+                };
+                const total = reqs.length || 1;
+                const badgeStyles: Record<string, string> = {
+                  Must: "bg-red-100 text-red-800 border-red-300",
+                  Should: "bg-orange-100 text-orange-800 border-orange-300",
+                  Could: "bg-blue-100 text-blue-800 border-blue-300",
+                  "Won't": "bg-gray-100 text-gray-600 border-gray-300",
+                };
+                const labels: Record<string, string> = {
+                  Must: "必须",
+                  Should: "应该",
+                  Could: "可能",
+                  "Won't": "不会",
+                };
+                const labelColors: Record<string, string> = {
+                  Must: "text-red-700",
+                  Should: "text-orange-700",
+                  Could: "text-blue-700",
+                  "Won't": "text-gray-600",
+                };
+                return (
+                  <>
+                    {/* 统计概览 */}
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(groups).map(([priority, items]) =>
+                        items.length > 0 ? (
+                          <Badge
+                            key={priority}
+                            variant="outline"
+                            className={badgeStyles[priority]}
+                          >
+                            {labels[priority]}：{items.length} 条 ({Math.round((items.length / total) * 100)}%)
+                          </Badge>
+                        ) : null
+                      )}
+                    </div>
+                    {/* 分组列表 */}
+                    <div className="space-y-2">
+                      {Object.entries(groups).map(([key, items]) =>
+                        items.length > 0 ? (
+                          <div key={key} className="space-y-1">
+                            <div className={`text-xs font-medium ${labelColors[key]}`}>
+                              {labels[key]}（{key}）：
+                            </div>
+                            <ul className="text-xs list-disc list-inside ml-2 space-y-0.5">
+                              {items.map((item, i) => (
+                                <li key={i}>
+                                  {titleMap.get(item.id) || item.id}
+                                  {item.rationale ? (
+                                    <span className="text-muted-foreground"> — {item.rationale}</span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
 
-          {analysis.quality && (
-            <div>
-              <h4 className="text-sm font-semibold mb-3 flex items-center gap-1">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
-                INCOSE 质量评估
-              </h4>
-              <div className="grid gap-3 md:grid-cols-2">
-                {INCOSE_ATTRIBUTES.map((attr) => {
-                  const val = analysis.quality?.[attr.key] ?? 0;
-                  return (
-                    <QualityScoreBar
-                      key={attr.key}
-                      label={attr.label}
-                      score={typeof val === "number" ? val : 0}
-                      description={attr.description}
-                    />
-                  );
-                })}
-              </div>
+          {/* 功能需求详细拆解 */}
+          {analysis.functional_requirements && analysis.functional_requirements.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="font-semibold text-sm">功能需求详细拆解</h4>
+              {analysis.functional_requirements.map((fr, i) => (
+                <div key={i} className="border rounded p-2 space-y-1">
+                  <div className="font-medium text-sm">{fr.title || fr.id}</div>
+                  {fr.sub_requirements && fr.sub_requirements.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">子需求:</span>
+                      <ul className="text-xs list-disc list-inside ml-2">
+                        {fr.sub_requirements.map((sr, j) => <li key={j}>{sr}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {fr.inputs && fr.inputs.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">输入:</span>
+                      <span className="text-xs ml-1">{fr.inputs.join(", ")}</span>
+                    </div>
+                  )}
+                  {fr.outputs && fr.outputs.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">输出:</span>
+                      <span className="text-xs ml-1">{fr.outputs.join(", ")}</span>
+                    </div>
+                  )}
+                  {fr.business_rules && fr.business_rules.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">业务规则:</span>
+                      <ul className="text-xs list-disc list-inside ml-2">
+                        {fr.business_rules.map((br, j) => <li key={j}>{br}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {fr.data_entities && fr.data_entities.length > 0 && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">数据实体:</span>
+                      <span className="text-xs ml-1">{fr.data_entities.join(", ")}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
-          {analysis.suggestions && (
+          {/* 非功能需求详细规格 */}
+          {analysis.non_functional_requirements && analysis.non_functional_requirements.length > 0 && (
+            <div className="space-y-2">
+              <h4 className="font-semibold text-sm">非功能需求详细规格</h4>
+              {analysis.non_functional_requirements.map((nfr, i) => (
+                <div key={i} className="border rounded p-2 space-y-1">
+                  <div className="font-medium text-sm">{nfr.title || nfr.id}</div>
+                  {nfr.quantitative_metric && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">量化指标:</span>
+                      <span className="text-xs ml-1">{nfr.quantitative_metric}</span>
+                    </div>
+                  )}
+                  {nfr.acceptance_threshold && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">验收阈值:</span>
+                      <span className="text-xs ml-1">{nfr.acceptance_threshold}</span>
+                    </div>
+                  )}
+                  {nfr.verification_method && (
+                    <div>
+                      <span className="text-xs text-muted-foreground">验证方法:</span>
+                      <span className="text-xs ml-1">{nfr.verification_method}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {analysis.use_cases && analysis.use_cases.length > 0 && (
             <div>
               <h4 className="text-sm font-semibold mb-2 flex items-center gap-1">
-                <AlertTriangle className="h-4 w-4 text-orange-500" />
-                改进建议
+                <FileText className="h-4 w-4 text-blue-500" />
+                用例描述
               </h4>
-              <div className="space-y-1">
-                {analysis.suggestions &&
-                  Object.entries(analysis.suggestions).map(([key, val]) => (
-                    <p key={key} className="text-sm text-muted-foreground">
-                      - {key}: {String(val)}
-                    </p>
-                  ))}
+              <div className="space-y-3">
+                {analysis.use_cases.map((uc, i) => (
+                  <div key={i} className="rounded-md border p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">{uc.actor}</Badge>
+                      <span className="text-sm font-medium">{uc.title}</span>
+                    </div>
+                    {uc.preconditions && (
+                      <p className="text-xs text-muted-foreground">
+                        <strong>前置条件：</strong>{uc.preconditions}
+                      </p>
+                    )}
+                    {uc.main_flow && uc.main_flow.length > 0 && (
+                      <div className="text-xs">
+                        <strong>主流程：</strong>
+                        <ol className="list-decimal list-inside mt-1 space-y-0.5">
+                          {uc.main_flow.map((step, j) => (
+                            <li key={j}>{step}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    )}
+                    {uc.alternative_flows && uc.alternative_flows.length > 0 && (
+                      <div className="text-xs">
+                        <strong>异常流程：</strong>
+                        <ul className="list-disc list-inside mt-1 space-y-0.5">
+                          {uc.alternative_flows.map((flow, j) => (
+                            <li key={j}>{flow}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {uc.postconditions && (
+                      <p className="text-xs text-muted-foreground">
+                        <strong>后置条件：</strong>{uc.postconditions}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 软件工程图表 */}
+          {analysis.diagrams && Object.keys(analysis.diagrams).length > 0 && (
+            <div className="space-y-2">
+              <h4 className="font-semibold text-sm">软件工程图表</h4>
+              <div className="grid grid-cols-1 gap-4">
+                {Object.entries(analysis.diagrams).map(([type, code]) => (
+                  <PlantUMLDiagram
+                    key={type}
+                    code={code as string}
+                    title={diagramTypeLabels[type] || type}
+                    type={type}
+                  />
+                ))}
               </div>
             </div>
           )}
@@ -242,6 +468,13 @@ export default function RequirementsPage() {
     analyzeRequirements,
     confirmRequirement,
   } = useRequirementStore();
+  const {
+    attachments,
+    isUploading,
+    fetchAttachments,
+    uploadAttachment,
+    deleteAttachment,
+  } = useAttachmentStore();
 
   const [selectedProjectId, setSelectedProjectId] = useState(
     projectIdFromUrl || ""
@@ -253,6 +486,11 @@ export default function RequirementsPage() {
     source: "",
   });
   const [isCreating, setIsCreating] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [importContent, setImportContent] = useState("");
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importAttachmentId, setImportAttachmentId] = useState<string>("");
 
   useEffect(() => {
     fetchProjects();
@@ -260,6 +498,7 @@ export default function RequirementsPage() {
 
   useEffect(() => {
     if (projectIdFromUrl) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedProjectId(projectIdFromUrl);
     }
   }, [projectIdFromUrl]);
@@ -267,8 +506,40 @@ export default function RequirementsPage() {
   useEffect(() => {
     if (selectedProjectId) {
       fetchRequirements(selectedProjectId);
+      fetchAttachments(selectedProjectId);
     }
-  }, [selectedProjectId, fetchRequirements]);
+  }, [selectedProjectId, fetchRequirements, fetchAttachments]);
+
+  const handleUploadFile = async (file: File) => {
+    if (!selectedProjectId) return;
+    await uploadAttachment(selectedProjectId, file);
+  };
+
+  const handleDeleteAttachment = async (attachmentId: string) => {
+    if (!selectedProjectId) return;
+    await deleteAttachment(selectedProjectId, attachmentId);
+  };
+
+  const handleDownloadAttachment = async (attachmentId: string, filename: string) => {
+    if (!selectedProjectId) return;
+    try {
+      const response = await attachmentAPI.download(selectedProjectId, attachmentId);
+      const url = window.URL.createObjectURL(response.data as Blob);
+      const a = window.document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      // 静默处理
+    }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   const handleCreate = async () => {
     if (!selectedProjectId || !newReq.title.trim()) return;
@@ -292,6 +563,28 @@ export default function RequirementsPage() {
   const handleConfirm = async (reqId: string) => {
     if (!selectedProjectId) return;
     await confirmRequirement(selectedProjectId, reqId);
+  };
+
+  const handleImportAndAnalyze = async () => {
+    if (!selectedProjectId || (!importContent.trim() && !importAttachmentId)) return;
+    setIsImporting(true);
+    setImportError("");
+    try {
+      await requirementAPI.importAndAnalyze(
+        selectedProjectId,
+        importContent,
+        importAttachmentId || undefined
+      );
+      await fetchRequirements(selectedProjectId);
+      setImportContent("");
+      setImportAttachmentId("");
+      setIsImportOpen(false);
+    } catch (err: unknown) {
+      const axiosError = err as { response?: { data?: { detail?: string } } };
+      setImportError(axiosError.response?.data?.detail || "导入失败，请重试");
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   return (
@@ -347,19 +640,15 @@ export default function RequirementsPage() {
                         }
                       />
                     </div>
-                    <div className="space-y-2">
+                    <div className="space-y-2" data-color-mode="light">
                       <Label htmlFor="req-desc">需求描述</Label>
-                      <Textarea
-                        id="req-desc"
-                        placeholder="请详细描述需求内容"
+                      <MDEditor
                         value={newReq.description}
-                        onChange={(e) =>
-                          setNewReq((prev) => ({
-                            ...prev,
-                            description: e.target.value,
-                          }))
+                        onChange={(val) =>
+                          setNewReq((prev) => ({ ...prev, description: val || "" }))
                         }
-                        rows={5}
+                        height={200}
+                        preview="edit"
                       />
                     </div>
                     <div className="space-y-2">
@@ -376,6 +665,20 @@ export default function RequirementsPage() {
                         }
                       />
                     </div>
+                    <div className="space-y-2">
+                      <Label>附件上传</Label>
+                      <Input
+                        type="file"
+                        disabled={isUploading}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleUploadFile(file);
+                        }}
+                      />
+                      {isUploading && (
+                        <p className="text-xs text-muted-foreground">上传中...</p>
+                      )}
+                    </div>
                   </div>
                   <DialogFooter>
                     <Button
@@ -386,6 +689,80 @@ export default function RequirementsPage() {
                     </Button>
                     <Button onClick={handleCreate} disabled={isCreating}>
                       {isCreating ? "添加中..." : "添加"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+              <Dialog open={isImportOpen} onOpenChange={setIsImportOpen}>
+                <DialogTrigger render={<Button size="sm" variant="outline" />}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  从文档导入需求
+                </DialogTrigger>
+                <DialogContent className="max-w-2xl">
+                  <DialogHeader>
+                    <DialogTitle>从文档导入需求</DialogTitle>
+                    <DialogDescription>
+                      粘贴计划书或需求文档内容，AI 将自动提取所有需求并逐条分析
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="import-content">文档内容</Label>
+                      <Textarea
+                        id="import-content"
+                        placeholder="在此粘贴计划书/需求文档的完整内容..."
+                        className="min-h-[300px] font-mono text-sm"
+                        value={importContent}
+                        onChange={(e) => setImportContent(e.target.value)}
+                      />
+                    </div>
+                    {attachments.length > 0 && (
+                      <div className="space-y-2">
+                        <Label>从附件导入（可选）</Label>
+                        <Select
+                          value={importAttachmentId}
+                          onValueChange={(v) => setImportAttachmentId(v ?? "")}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="选择已上传的附件" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {attachments.map((att) => (
+                              <SelectItem key={att.id} value={att.id}>
+                                {att.filename}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    {importError && (
+                      <p className="text-sm text-destructive">{importError}</p>
+                    )}
+                  </div>
+                  <DialogFooter>
+                    <Button
+                      variant="outline"
+                      onClick={() => setIsImportOpen(false)}
+                      disabled={isImporting}
+                    >
+                      取消
+                    </Button>
+                    <Button
+                      onClick={handleImportAndAnalyze}
+                      disabled={(!importContent.trim() && !importAttachmentId) || isImporting}
+                    >
+                      {isImporting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          正在提取和分析...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="mr-2 h-4 w-4" />
+                          提取并分析
+                        </>
+                      )}
                     </Button>
                   </DialogFooter>
                 </DialogContent>
@@ -454,6 +831,58 @@ export default function RequirementsPage() {
               </div>
             ))}
           </div>
+        )}
+
+        {/* 附件列表 */}
+        {selectedProjectId && attachments.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Paperclip className="h-4 w-4" />
+                项目附件
+              </CardTitle>
+              <CardDescription>
+                共 {attachments.length} 个附件
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {attachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="flex items-center justify-between rounded-md border p-3"
+                  >
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <Paperclip className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{att.filename}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatFileSize(att.file_size)}
+                          {att.file_type ? ` · ${att.file_type}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDownloadAttachment(att.id, att.filename)}
+                      >
+                        <Download className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDeleteAttachment(att.id)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
         )}
       </main>
     </div>

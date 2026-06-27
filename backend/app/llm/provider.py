@@ -21,8 +21,8 @@ class LLMProvider(ABC):
         self.model: str = ""
 
     @abstractmethod
-    async def complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.3) -> LLMResponse:
-        """同步调用 LLM"""
+    async def complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.3, json_mode: bool = True) -> LLMResponse:
+        """同步调用 LLM。json_mode=True 时强制 JSON 输出，False 时允许文本输出"""
         ...
 
     @abstractmethod
@@ -31,11 +31,17 @@ class LLMProvider(ABC):
         ...
 
 
+_provider_instance: LLMProvider | None = None
+
+
 def get_llm_provider() -> LLMProvider:
-    """根据配置获取 LLM Provider 实例"""
-    if settings.LLM_PROVIDER == "openai":
-        from app.llm.openai_provider import OpenAIProvider
-        return OpenAIProvider()
-    else:
-        from app.llm.deepseek_provider import DeepSeekProvider
-        return DeepSeekProvider()
+    """根据配置获取 LLM Provider 实例（单例）"""
+    global _provider_instance
+    if _provider_instance is None:
+        if settings.LLM_PROVIDER == "openai":
+            from app.llm.openai_provider import OpenAIProvider
+            _provider_instance = OpenAIProvider()
+        else:
+            from app.llm.deepseek_provider import DeepSeekProvider
+            _provider_instance = DeepSeekProvider()
+    return _provider_instance

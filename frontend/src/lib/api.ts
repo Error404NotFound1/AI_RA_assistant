@@ -70,6 +70,15 @@ export const requirementAPI = {
     api.put(`/projects/${projectId}/requirements/${reqId}/confirm`),
   getQuality: (projectId: string, reqId: string) =>
     api.get(`/projects/${projectId}/requirements/${reqId}/quality`),
+  getUseCases: (projectId: string, reqId: string) =>
+    api.get(`/projects/${projectId}/requirements/${reqId}/use-cases`),
+  importAndAnalyze: (projectId: string, content: string, attachmentId?: string) =>
+    api.post(`/projects/${projectId}/requirements/import-and-analyze`, {
+      content,
+      attachment_id: attachmentId,
+    }),
+  generateDiagrams: (projectId: string, reqId: string) =>
+    api.post(`/projects/${projectId}/requirements/${reqId}/generate-diagrams`),
 };
 
 // ===== 架构 API =====
@@ -85,6 +94,44 @@ export const architectureAPI = {
     api.post(`/projects/${projectId}/architectures/${solutionId}/adr`, data),
   autoMapTraceability: (projectId: string) =>
     api.post(`/projects/${projectId}/architectures/traceability/auto-map`),
+  getTraceabilityMatrix: (projectId: string) =>
+    api.get(`/projects/${projectId}/architectures/traceability/matrix`),
+  generateArchDoc: (projectId: string, solutionId: string) =>
+    api.post(`/projects/${projectId}/architectures/${solutionId}/generate-doc`),
+  generatePlantuml: (projectId: string, solutionId: string) =>
+    api.post(`/projects/${projectId}/architectures/${solutionId}/generate-plantuml`),
+};
+
+// ===== 文档 API =====
+export const documentAPI = {
+  generate: (projectId: string) =>
+    api.post(`/projects/${projectId}/documents/generate`),
+  list: (projectId: string) =>
+    api.get(`/projects/${projectId}/documents`),
+  get: (projectId: string, docId: string) =>
+    api.get(`/projects/${projectId}/documents/${docId}`),
+  update: (projectId: string, docId: string, data: { content: string; title?: string }) =>
+    api.put(`/projects/${projectId}/documents/${docId}`, data),
+  compare: (projectId: string, v1: string, v2: string) =>
+    api.get(`/projects/${projectId}/documents/compare`, { params: { v1, v2 } }),
+  exportDoc: (projectId: string, docId: string, format: string) =>
+    api.get(`/projects/${projectId}/documents/${docId}/export`, { params: { format }, responseType: "blob" }),
+};
+
+// ===== 附件 API =====
+export const attachmentAPI = {
+  upload: (projectId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return api.post(`/projects/${projectId}/attachments`, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+  },
+  list: (projectId: string) => api.get(`/projects/${projectId}/attachments`),
+  download: (projectId: string, attachmentId: string) =>
+    api.get(`/projects/${projectId}/attachments/${attachmentId}/download`, { responseType: "blob" }),
+  delete: (projectId: string, attachmentId: string) =>
+    api.delete(`/projects/${projectId}/attachments/${attachmentId}`),
 };
 
 // ===== 管理员 API =====
@@ -95,6 +142,7 @@ export const adminAPI = {
   toggleUserStatus: (userId: string) =>
     api.put(`/admin/users/${userId}/status`),
   getDashboard: () => api.get("/admin/dashboard"),
+  getStatistics: () => api.get("/admin/statistics"),
   getLogs: (params?: { action?: string; limit?: number }) =>
     api.get("/admin/logs", { params }),
 };

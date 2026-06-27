@@ -33,6 +33,7 @@ class Project(Base):
     requirements = relationship("Requirement", back_populates="project", cascade="all, delete-orphan", lazy="noload")
     documents = relationship("Document", back_populates="project", cascade="all, delete-orphan", lazy="noload")
     architectures = relationship("ArchitectureSolution", back_populates="project", cascade="all, delete-orphan", lazy="noload")
+    attachments = relationship("Attachment", back_populates="project", cascade="all, delete-orphan", lazy="noload")
 
 
 class ProjectMember(Base):

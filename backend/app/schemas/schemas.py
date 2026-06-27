@@ -116,6 +116,12 @@ class RequirementAnalyzeRequest(BaseModel):
     requirement_ids: list[uuid.UUID] | None = None  # 空=分析全部 draft 需求
 
 
+class ImportFromDocumentRequest(BaseModel):
+    """从文档导入需求请求"""
+    content: str = Field(..., description="文档纯文本内容")
+    attachment_id: str | None = Field(None, description="附件 ID（可选）")
+
+
 class QualityEvaluationPublic(BaseModel):
     completeness: int | None
     consistency: str | None
@@ -182,6 +188,16 @@ class DocumentGenerateRequest(BaseModel):
     doc_type: str = "srs"  # srs / architecture
 
 
+class AttachmentUploadResponse(BaseModel):
+    """附件上传响应（使用 Pydantic 模型确保 JSON 序列化正确转义控制字符）"""
+    id: uuid.UUID
+    filename: str
+    file_size: int
+    file_type: str | None = None
+    created_at: datetime | None = None
+    extracted_text: str | None = None
+
+
 # ===== 通用响应 =====
 class MessageResponse(BaseModel):
     message: str
@@ -192,3 +208,18 @@ class PaginatedResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+# ===== 用例相关 =====
+class UseCasePublic(BaseModel):
+    id: uuid.UUID
+    requirement_id: uuid.UUID
+    title: str
+    actor: str
+    preconditions: str | None = None
+    main_flow: list | None = None
+    alternative_flows: list | None = None
+    postconditions: str | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}

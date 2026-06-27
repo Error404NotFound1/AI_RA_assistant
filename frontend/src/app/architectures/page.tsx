@@ -14,7 +14,12 @@ import {
   GitBranch,
   ChevronDown,
   ChevronUp,
+  FileText,
+  Code2,
+  ImageIcon,
 } from "lucide-react";
+import MDEditor from "@uiw/react-md-editor";
+import { encode as plantumlEncode } from "plantuml-encoder";
 import { AppHeader } from "@/components/layout/app-header";
 import { Button } from "@/components/ui/button";
 import {
@@ -75,7 +80,7 @@ function ArchitectureDetailCard({
   projectId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const { createReview, createADR, fetchSolution } = useArchitectureStore();
+  const { createReview, createADR, fetchSolution, generateArchDoc, generatePlantuml, isGeneratingDoc, isGeneratingPlantuml } = useArchitectureStore();
   const [isReviewOpen, setIsReviewOpen] = useState(false);
   const [isADROpen, setIsADROpen] = useState(false);
   const [reviewData, setReviewData] = useState({ comment: "", rating: 3 });
@@ -86,6 +91,18 @@ function ArchitectureDetailCard({
     consequences: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localArchDoc, setLocalArchDoc] = useState<string | null>(null);
+  const [localPlantuml, setLocalPlantuml] = useState<string | null>(null);
+
+  const handleGenerateDoc = async () => {
+    const result = await generateArchDoc(projectId, solution.id);
+    if (result) setLocalArchDoc(result);
+  };
+
+  const handleGeneratePlantuml = async () => {
+    const result = await generatePlantuml(projectId, solution.id);
+    if (result) setLocalPlantuml(result);
+  };
 
   const recommendation = solution.recommendation as {
     pattern?: string;
@@ -228,7 +245,25 @@ function ArchitectureDetailCard({
           )}
 
           {/* 操作按钮 */}
-          <div className="flex gap-2 pt-2">
+          <div className="flex gap-2 pt-2 flex-wrap">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleGenerateDoc}
+              disabled={isGeneratingDoc}
+            >
+              <FileText className="mr-2 h-4 w-4" />
+              {isGeneratingDoc ? "生成中..." : "生成架构文档"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleGeneratePlantuml}
+              disabled={isGeneratingPlantuml}
+            >
+              <Code2 className="mr-2 h-4 w-4" />
+              {isGeneratingPlantuml ? "生成中..." : "生成 PlantUML"}
+            </Button>
             <Dialog open={isReviewOpen} onOpenChange={setIsReviewOpen}>
               <DialogTrigger render={<Button size="sm" variant="outline" />}>
                 <MessageSquare className="mr-2 h-4 w-4" />
@@ -352,6 +387,40 @@ function ArchitectureDetailCard({
               </DialogContent>
             </Dialog>
           </div>
+
+          {/* 生成的架构文档 */}
+          {localArchDoc && (
+            <div className="space-y-2 pt-2" data-color-mode="light">
+              <h4 className="text-sm font-semibold flex items-center gap-1">
+                <FileText className="h-4 w-4 text-primary" />
+                架构文档
+              </h4>
+              <div className="rounded-md border p-3 max-h-[400px] overflow-auto">
+                <MDEditor.Markdown source={localArchDoc} />
+              </div>
+            </div>
+          )}
+
+          {/* 生成的 PlantUML 图 */}
+          {localPlantuml && (
+            <div className="space-y-2 pt-2">
+              <h4 className="text-sm font-semibold flex items-center gap-1">
+                <ImageIcon className="h-4 w-4 text-primary" />
+                PlantUML 架构图
+              </h4>
+              <div className="rounded-md border p-3 bg-white">
+                <img
+                  src={`http://www.plantuml.com/plantuml/img/${plantumlEncode(localPlantuml)}`}
+                  alt="Architecture Diagram"
+                  className="max-w-full"
+                />
+              </div>
+              <details className="text-xs">
+                <summary className="cursor-pointer text-muted-foreground">查看 PlantUML 源码</summary>
+                <pre className="mt-2 p-3 bg-muted rounded-md overflow-auto whitespace-pre-wrap">{localPlantuml}</pre>
+              </details>
+            </div>
+          )}
         </CardContent>
       )}
     </Card>

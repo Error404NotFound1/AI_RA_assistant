@@ -11,7 +11,22 @@ import {
   UserCog,
   ToggleLeft,
   ToggleRight,
+  FileText,
+  Paperclip,
+  TrendingUp,
+  Target,
+  ListChecks,
 } from "lucide-react";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  Cell,
+} from "recharts";
 import { AppHeader } from "@/components/layout/app-header";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +53,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
 import { useAuthStore } from "@/lib/auth-store";
 import { adminAPI } from "@/lib/api";
 
@@ -56,6 +72,28 @@ interface DashboardStats {
   total_projects: number;
   total_requirements: number;
   total_analyses: number;
+}
+
+interface StatisticsData {
+  ai_usage?: Array<{ action: string; count: number }>;
+  requirement_coverage?: {
+    total: number;
+    analyzed: number;
+    coverage_rate: number;
+  };
+  structured_data?: {
+    user_stories: number;
+    use_cases: number;
+    traceability_links: number;
+  };
+  documents?: {
+    total: number;
+    by_type?: Array<{ type: string; count: number }>;
+  };
+  attachments?: {
+    total: number;
+    total_size: number;
+  };
 }
 
 function getRoleLabel(role: string) {
@@ -91,18 +129,21 @@ export default function AdminPage() {
     total_requirements: 0,
     total_analyses: 0,
   });
+  const [statistics, setStatistics] = useState<StatisticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       setIsLoading(true);
       try {
-        const [usersRes, dashboardRes] = await Promise.all([
+        const [usersRes, dashboardRes, statsRes] = await Promise.all([
           adminAPI.listUsers(),
           adminAPI.getDashboard(),
+          adminAPI.getStatistics().catch(() => null),
         ]);
         setUsers(usersRes.data);
         setStats(dashboardRes.data);
+        if (statsRes) setStatistics(statsRes.data);
       } catch {
         // 静默处理
       } finally {
@@ -232,6 +273,10 @@ export default function AdminPage() {
             <TabsTrigger value="logs">
               <Activity className="mr-2 h-4 w-4" />
               操作日志
+            </TabsTrigger>
+            <TabsTrigger value="statistics">
+              <BarChart3 className="mr-2 h-4 w-4" />
+              统计信息
             </TabsTrigger>
           </TabsList>
 

@@ -11,6 +11,8 @@ import {
   LayoutDashboard,
   ShieldCheck,
   BrainCircuit,
+  GitBranch,
+  FileStack,
 } from "lucide-react";
 import {
   Sidebar,
@@ -32,6 +34,8 @@ const navItems = [
   { icon: FolderKanban, title: "项目管理", path: "/projects" },
   { icon: FileText, title: "需求分析", path: "/requirements" },
   { icon: LayoutDashboard, title: "架构设计", path: "/architectures" },
+  { icon: GitBranch, title: "追溯矩阵", path: "/traceability" },
+  { icon: FileStack, title: "文档管理", path: "/documents" },
   { icon: BrainCircuit, title: "AI 助手", path: "/ai-assistant" },
 ];
 

@@ -52,6 +52,7 @@ class Requirement(Base):
     user_stories = relationship("UserStory", back_populates="requirement", cascade="all, delete-orphan", lazy="noload")
     quality_evaluation = relationship("QualityEvaluation", back_populates="requirement", uselist=False, lazy="noload")
     traceability_links = relationship("TraceabilityLink", back_populates="requirement", cascade="all, delete-orphan", lazy="noload")
+    use_cases = relationship("UseCase", back_populates="requirement", cascade="all, delete-orphan", lazy="noload")
 
 
 class UserStory(Base):
@@ -86,3 +87,20 @@ class QualityEvaluation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     requirement = relationship("Requirement", back_populates="quality_evaluation")
+
+
+class UseCase(Base):
+    """用例描述表"""
+    __tablename__ = "use_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    requirement_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    preconditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    main_flow: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 步骤数组
+    alternative_flows: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 异常流程数组
+    postconditions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    requirement = relationship("Requirement", back_populates="use_cases")

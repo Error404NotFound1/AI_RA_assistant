@@ -36,17 +36,22 @@
 
 ### 2. AI 需求分析（核心）
 
-采用 **三步链式 AI 分析流程**：
+采用 **四步并行 AI 分析流程**（Step 1 串行提取 → Step 2/3/4 通过 `asyncio.gather` 并行执行）：
 
 ```
-需求文本 → [Step 1: 提取] → [Step 2: 分类] → [Step 3: 质量评估] → 分析结果
+需求文本 → [Step 1: 提取(三阶段)] ──┬→ [Step 2: 分类]    ──┐
+                                  ├→ [Step 3: 质量评估] ──┤→ 合并保存
+                                  └→ [Step 4: 用例生成] ──┘
 ```
 
-| 步骤 | 说明 | 参考标准 |
-|------|------|----------|
-| 需求提取 | 从自然语言中提取功能需求 (FR) 和非功能需求 (NFR) | IEEE 830 |
-| MoSCoW 分类 | 按 Must / Should / Could / Wont 四级优先级排序 | MoSCoW 方法 |
-| 质量评估 | 基于 INCOSE 7 项质量属性逐条评分 | INCOSE 标准 |
+| 步骤 | 说明 | 参考标准 | 执行方式 |
+|------|------|----------|----------|
+| Step 1: 需求提取 | 三阶段工作流（意图理解 → 需求补全 → 结构化提取），输出 FR/NFR + 用户故事 + 意图分析 | IEEE 830 | 串行 |
+| Step 2: MoSCoW 分类 | 按 Must / Should / Could / Wont 四级优先级排序 | MoSCoW 方法 | 并行 |
+| Step 3: 质量评估 | 基于 INCOSE 7 项质量属性逐条评分 | INCOSE 标准 | 并行 |
+| Step 4: 用例生成 | 生成用例描述（actor, preconditions, main_flow, alternative_flows, postconditions） | UML 用例 | 并行 |
+
+**LLM 调用次数**：每轮完整需求分析 4 次（1 次提取 + 3 次并行），延迟约 2×LLM（并行优化）
 
 INCOSE 7 项质量属性：
 
@@ -71,23 +76,41 @@ INCOSE 7 项质量属性：
 5. 质量属性验证
 
 附加功能：
+- **架构文档生成** — AI 生成 Markdown 架构设计文档（IEEE 1471 结构）
+- **PlantUML 组件图** — AI 生成 PlantUML 组件图代码，前端自动渲染
 - **架构评审** — 提交评分和意见
 - **ADR (Architecture Decision Record)** — 记录架构决策及背景
 - **AI 追溯映射** — 自动建立需求→组件的追溯关系，计算覆盖率
+- **可追溯性矩阵** — 需求级全链追溯（需求→用户故事→用例→架构组件）
 
-### 4. 项目管理
+### 4. 需求规格文档管理
+
+- **AI 自动生成** SRS 需求规格说明书（基于分析结果）
+- **在线编辑** 文档内容（Markdown 富文本编辑器）
+- **版本控制** 自动递增版本号，支持历史版本查看
+- **版本对比** 使用 difflib 生成 unified_diff 差异视图
+- **导出** 支持 Markdown / HTML / TXT 三种格式
+
+### 5. 文件上传
+
+- 项目级附件上传（支持 md/txt/pdf/doc/png/csv 等格式）
+- 10MB 文件大小限制
+- 附件下载与删除
+
+### 6. 项目管理
 
 - 项目 CRUD + 成员管理
 - 项目内需求/架构方案的多 Tab 管理
 - 统计概览（需求数量、分析状态、架构方案数）
 
-### 5. 管理员仪表盘
+### 7. 管理员仪表盘
 
 - 用户列表、角色切换、启用/禁用
-- 系统统计（用户数、项目数、需求数、AI 分析次数）
-- 操作日志查询
+- 系统统计（用户数、项目数、需求数、架构方案数）
+- **AI 使用统计** — AI 调用频次、需求覆盖率、结构化数据/文档/附件统计
+- 操作日志查询（审计中间件自动记录统计类 GET 请求）
 
-### 6. AI 助手对话
+### 8. AI 助手对话
 
 - 聊天式交互界面
 - 快捷提问模板
@@ -124,6 +147,9 @@ INCOSE 7 项质量属性：
 | Zustand | 5 | 状态管理 |
 | Axios | 1.16 | HTTP 客户端 |
 | Recharts | 3 | 图表可视化 |
+| @uiw/react-md-editor | 4 | Markdown 富文本编辑器 |
+| plantuml-encoder | 1.4 | PlantUML 组件图渲染 |
+| diff-match-patch | 1.0 | 文档版本对比 |
 | Lucide React | 1.17 | 图标库 |
 
 ### 基础设施
@@ -167,7 +193,7 @@ INCOSE 7 项质量属性：
 │  │  │ DeepSeek     │    │ OpenAI (GPT-4o)  │           │  │
 │  │  │ Provider     │    │ Provider         │           │  │
 │  │  └──────────────┘    └──────────────────┘           │  │
-│  │  6 套 Prompt 模板（提取/分类/质量/文档/架构/追溯）    │  │
+│  │  9 套 Prompt 模板（提取/分类/质量/用例/文档/架构/架构文档/PlantUML/追溯）│  │
 │  └─────────────────────────────────────────────────────┘  │
 └──────────┬───────────────────────────────┬────────────────┘
            │                               │
@@ -188,30 +214,37 @@ ai-se-assistant/
 │   │   ├── api/                      # API 路由
 │   │   │   ├── auth.py               # 认证：注册/登录/刷新/获取用户
 │   │   │   ├── projects.py           # 项目 CRUD + 成员管理
-│   │   │   ├── requirements.py        # 需求 CRUD + AI 分析 + SSE 流式
-│   │   │   ├── architectures.py       # 架构推荐 + 评审 + ADR + 追溯
-│   │   │   └── admin.py               # 用户管理 + 仪表盘 + 日志
+│   │   │   ├── requirements.py        # 需求 CRUD + AI 分析 + SSE 流式 + 用例
+│   │   │   ├── architectures.py       # 架构推荐 + 评审 + ADR + 追溯 + 矩阵 + 文档/PlantUML 生成
+│   │   │   ├── documents.py           # 文档管理（生成/编辑/对比/导出）
+│   │   │   ├── uploads.py             # 文件上传（附件管理）
+│   │   │   └── admin.py               # 用户管理 + 仪表盘 + 统计 + 日志
 │   │   ├── core/                     # 核心配置
 │   │   │   ├── config.py             # 环境变量配置
 │   │   │   ├── db.py                  # 异步数据库引擎
 │   │   │   ├── deps.py               # 依赖注入 (JWT 验证 + RBAC)
 │   │   │   └── security.py           # JWT 令牌 + bcrypt 密码
+│   │   ├── middleware/               # 中间件
+│   │   │   └── audit_middleware.py   # 审计中间件（统计类 GET 请求日志）
 │   │   ├── models/                   # SQLAlchemy 数据模型
 │   │   │   ├── user.py               # 用户模型 + UserRole 枚举
 │   │   │   ├── project.py            # 项目 + 成员模型
-│   │   │   ├── requirement.py        # 需求 + 用户故事 + 质量评估
+│   │   │   ├── requirement.py        # 需求 + 用户故事 + 质量评估 + 用例
 │   │   │   ├── architecture.py       # 架构方案 + 组件 + 评审 + ADR + 追溯
-│   │   │   └── document.py           # 文档 + 操作日志
+│   │   │   └── document.py           # 文档 + 操作日志 + 附件
 │   │   ├── llm/                      # AI 大模型服务层
-│   │   │   ├── provider.py           # LLM Provider 抽象基类
+│   │   │   ├── provider.py           # LLM Provider 抽象基类 + 单例工厂
 │   │   │   ├── deepseek_provider.py  # DeepSeek 实现
 │   │   │   ├── openai_provider.py    # OpenAI 实现
 │   │   │   └── prompts/
-│   │   │       └── requirement_extractor.py  # 6 套 Prompt 模板
+│   │   │       └── requirement_extractor.py  # 9 套 Prompt 模板
 │   │   ├── schemas/
 │   │   │   └── schemas.py            # Pydantic 请求/响应模型
 │   │   ├── init_db.py                # 数据库初始化脚本
 │   │   └── main.py                   # FastAPI 入口
+│   ├── tests/                        # 测试（内存 SQLite + mock LLM）
+│   │   ├── conftest.py               # 测试配置
+│   │   └── test_*.py                 # 7 个测试文件（39 个测试）
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── .env                          # 环境变量（需配置 API Key）
@@ -225,7 +258,9 @@ ai-se-assistant/
 │   │   │   ├── projects/             # 项目列表
 │   │   │   ├── projects/[id]/        # 项目详情 (Tabs)
 │   │   │   ├── requirements/         # 需求分析 (AI + INCOSE)
-│   │   │   ├── architectures/        # 架构设计 (ADD + ADR)
+│   │   │   ├── architectures/        # 架构设计 (ADD + ADR + 文档/PlantUML)
+│   │   │   ├── documents/            # 文档管理 (编辑/对比/导出/PlantUML)
+│   │   │   ├── traceability/         # 可追溯性矩阵
 │   │   │   ├── admin/                # 管理员面板
 │   │   │   └── ai-assistant/         # AI 对话助手
 │   │   ├── components/
@@ -258,7 +293,7 @@ ai-se-assistant/
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) (推荐方式)
 - 或本地安装：Python 3.12+、Node.js 22+、PostgreSQL 16+、Redis 7+
-- 一个 LLM API Key（[DeepSeek](https://platform.deepseek.com/) 或 [OpenAI](https://platform.openai.com/)）
+- 一个 LLM API Key（[DeepSeek](https://platform.deepseek.com/)、[OpenAI](https://platform.openai.com/) 或兼容 OpenAI 接口的中转站如 yunwu.ai）
 
 ### 方式一：Docker Compose（推荐）
 
@@ -354,13 +389,15 @@ SECRET_KEY=your-secret-key-here  # 生产环境请使用 python -c "import secre
 ACCESS_TOKEN_EXPIRE_MINUTES=30
 REFRESH_TOKEN_EXPIRE_DAYS=7
 
-# LLM API 配置
-LLM_PROVIDER=deepseek            # deepseek 或 openai
-DEEPSEEK_API_KEY=your-key        # DeepSeek API Key
-DEEPSEEK_MODEL=deepseek-chat
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-OPENAI_API_KEY=your-key          # OpenAI API Key (如果用 openai)
+# LLM API 配置（使用 yunwu.ai 中转站）
+LLM_PROVIDER=openai              # deepseek 或 openai
+OPENAI_API_KEY=your-api-key-here # OpenAI API Key
 OPENAI_MODEL=gpt-4o
+OPENAI_BASE_URL=https://yunwu.ai/v1  # yunwu.ai 中转站
+# DeepSeek 备用配置
+# DEEPSEEK_API_KEY=your-key
+# DEEPSEEK_MODEL=deepseek-chat
+# DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 # Redis
 REDIS_URL=redis://localhost:6379/0   # Docker 模式下改为 redis://redis:6379/0
@@ -411,10 +448,31 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 | POST | `/requirements` | 录入需求 |
 | GET | `/requirements/{id}` | 获取需求详情 |
 | PUT | `/requirements/{id}` | 更新需求 |
-| POST | `/requirements/analyze` | AI 需求分析（三步链式） |
+| POST | `/requirements/analyze` | AI 需求分析（四步并行） |
 | POST | `/requirements/analyze/stream` | SSE 流式分析 |
 | PUT | `/requirements/{id}/confirm` | 确认需求 |
 | GET | `/requirements/{id}/quality` | 获取质量评估 |
+| GET | `/requirements/{id}/use-cases` | 获取需求的用例描述 |
+
+#### 文档管理 (`/api/v1/projects/{project_id}/documents`)
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/documents/generate` | AI 生成需求规格文档 |
+| GET | `/documents` | 获取文档列表 |
+| GET | `/documents/{doc_id}` | 获取文档详情 |
+| PUT | `/documents/{doc_id}` | 在线编辑文档（创建新版本） |
+| GET | `/documents/compare` | 版本对比（difflib.unified_diff） |
+| GET | `/documents/{doc_id}/export` | 导出文档（Markdown/HTML/TXT） |
+
+#### 文件上传 (`/api/v1/projects/{project_id}/attachments`)
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/attachments` | 上传附件（10MB 限制） |
+| GET | `/attachments` | 获取附件列表 |
+| GET | `/attachments/{attachment_id}/download` | 下载附件 |
+| DELETE | `/attachments/{attachment_id}` | 删除附件 |
 
 #### 架构 (`/api/v1/projects/{project_id}/architectures`)
 
@@ -426,6 +484,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 | POST | `/architectures/{id}/reviews` | 提交架构评审 |
 | POST | `/architectures/{id}/adr` | 创建 ADR |
 | POST | `/architectures/traceability/auto-map` | AI 追溯映射 |
+| GET | `/architectures/traceability/matrix` | 需求级可追溯性矩阵 |
+| POST | `/architectures/{solution_id}/generate-doc` | AI 生成架构设计文档 |
+| POST | `/architectures/{solution_id}/generate-plantuml` | AI 生成 PlantUML 组件图 |
 
 #### 管理员 (`/api/v1/admin`)
 
@@ -435,6 +496,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 | PUT | `/admin/users/{id}/role` | 修改用户角色 |
 | PUT | `/admin/users/{id}/status` | 启用/禁用用户 |
 | GET | `/admin/dashboard` | 仪表盘统计 |
+| GET | `/admin/statistics` | AI 使用频次/覆盖率/结构化数据/文档/附件统计 |
 | GET | `/admin/logs` | 操作日志 |
 
 ---
@@ -452,20 +514,25 @@ LLMProvider (抽象基类)
 ```
 
 两个 Provider 都支持：
-- `complete()` — 同步调用，返回结构化 JSON
+- `complete(system_prompt, user_prompt, temperature=0.3, json_mode=True)` — 同步调用，`json_mode=True` 时强制 JSON 输出，`json_mode=False` 时允许文本输出（用于文档/PlantUML 生成）
 - `stream()` — 流式调用，返回异步生成器
+
+Provider 通过 `get_llm_provider()` 全局单例获取，超时 60 秒，最大重试 2 次。
 
 ### Prompt 工程
 
-系统内置 6 套精心设计的 Prompt 模板，每套包含 System Prompt + User Template：
+系统内置 9 套精心设计的 Prompt 模板，每套包含 System Prompt + User Template：
 
 | Prompt | 用途 | 参考标准 |
 |--------|------|----------|
-| EXTRACTOR | 从自然语言提取 FR/NFR | IEEE 830 |
+| EXTRACTOR | 三阶段工作流（意图理解→补全→提取）提取 FR/NFR + 用户故事 | IEEE 830 |
 | CLASSIFIER | MoSCoW 优先级分类 | MoSCoW 方法 |
 | QUALITY_CHECKER | INCOSE 7 维度质量评估 | INCOSE 标准 |
+| USE_CASE_GENERATOR | 生成用例描述（actor/main_flow/alternative_flows） | UML 用例 |
 | DOC_GENERATOR | 生成 SRS 文档 | IEEE 830 |
 | ARCH_RECOMMENDER | ADD 方法架构推荐 | ADD 方法 |
+| ARCH_DOC_GENERATOR | 生成架构设计文档（Markdown） | IEEE 1471 |
+| PLANTUML_GENERATOR | 生成 PlantUML 组件图代码 | PlantUML |
 | TRACEABILITY_MAPPER | 需求-组件追溯映射 | RTM |
 
 ### RBAC 权限模型

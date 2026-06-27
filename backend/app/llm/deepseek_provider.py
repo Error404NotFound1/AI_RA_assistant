@@ -1,12 +1,15 @@
 """DeepSeek Provider 实现"""
 
 import json
+import logging
 from typing import AsyncGenerator
 
 from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.llm.provider import LLMProvider, LLMResponse
+
+logger = logging.getLogger(__name__)
 
 
 class DeepSeekProvider(LLMProvider):
@@ -18,27 +21,38 @@ class DeepSeekProvider(LLMProvider):
         self.client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
+            timeout=60,
+            max_retries=2,
         )
 
-    async def complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.3) -> LLMResponse:
-        """调用 DeepSeek API 获取完整响应"""
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
+    async def complete(self, system_prompt: str, user_prompt: str, temperature: float = 0.3, json_mode: bool = True) -> LLMResponse:
+        """调用 DeepSeek API 获取完整响应。json_mode=True 时强制 JSON 输出，False 时允许文本输出"""
+        kwargs = {
+            "model": self.model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=temperature,
-            response_format={"type": "json_object"},
-        )
+            "temperature": temperature,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        try:
+            response = await self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            logger.error("DeepSeek API 调用失败: %s", e)
+            raise
+
         content = response.choices[0].message.content or ""
 
-        # 尝试解析 JSON
+        # 仅在 json_mode=True 时尝试解析 JSON
         parsed_json = None
-        try:
-            parsed_json = json.loads(content)
-        except json.JSONDecodeError:
-            pass
+        if json_mode:
+            try:
+                parsed_json = json.loads(content)
+            except json.JSONDecodeError:
+                pass
 
         usage = {}
         if response.usage:
