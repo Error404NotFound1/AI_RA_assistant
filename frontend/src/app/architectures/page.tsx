@@ -284,7 +284,9 @@ function ArchitectureDetailCard({
                       }
                     >
                       <SelectTrigger>
-                        <SelectValue />
+                        <SelectValue>
+                          {reviewData.rating ? `${reviewData.rating} - ${["", "很差", "较差", "一般", "较好", "很好"][reviewData.rating]}` : undefined}
+                        </SelectValue>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="1">1 - 很差</SelectItem>
@@ -494,7 +496,11 @@ export default function ArchitecturesPage() {
               onValueChange={(v) => setSelectedProjectId(v ?? "")}
             >
               <SelectTrigger className="w-[300px]">
-                <SelectValue placeholder="请选择项目" />
+                <SelectValue placeholder="请选择项目">
+                  {selectedProjectId
+                    ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
+                    : undefined}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {projects.map((p) => (

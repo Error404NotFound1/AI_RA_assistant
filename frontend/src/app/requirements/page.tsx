@@ -16,6 +16,8 @@ import {
   Trash2,
   Download,
   Loader2,
+  Pencil,
+  RefreshCw,
 } from "lucide-react";
 import MDEditor from "@uiw/react-md-editor";
 import plantumlEncoder from "plantuml-encoder";
@@ -53,6 +55,7 @@ import {
   useProjectStore,
   useRequirementStore,
   useAttachmentStore,
+  type Requirement,
 } from "@/lib/project-store";
 import { attachmentAPI, requirementAPI } from "@/lib/api";
 
@@ -111,6 +114,7 @@ function AnalysisResultCard({
     title: string;
     description: string;
     status: string;
+    is_ai_extracted: boolean;
     analysis_result: Record<string, unknown> | null;
     priority: string | null;
   };
@@ -149,6 +153,11 @@ function AnalysisResultCard({
             <div className="flex items-center gap-2 mb-1">
               <CardTitle className="text-base">{requirement.title}</CardTitle>
               {getStatusBadge(requirement.status)}
+              {requirement.is_ai_extracted && (
+                <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-300">
+                  AI提取
+                </Badge>
+              )}
               {requirement.priority && (
                 <Badge variant="outline" className="text-xs">
                   {requirement.priority}
@@ -468,6 +477,8 @@ export default function RequirementsPage() {
     createRequirement,
     analyzeRequirements,
     confirmRequirement,
+    deleteRequirement,
+    reAnalyzeRequirement,
   } = useRequirementStore();
   const {
     attachments,
@@ -492,6 +503,14 @@ export default function RequirementsPage() {
   const [isImporting, setIsImporting] = useState(false);
   const [importError, setImportError] = useState("");
   const [importAttachmentId, setImportAttachmentId] = useState<string>("");
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingReq, setEditingReq] = useState<Requirement | null>(null);
+  const [editForm, setEditForm] = useState({ title: "", description: "" });
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deletingReq, setDeletingReq] = useState<Requirement | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [reAnalyzingId, setReAnalyzingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -566,6 +585,70 @@ export default function RequirementsPage() {
     await confirmRequirement(selectedProjectId, reqId);
   };
 
+  const handleOpenEdit = (req: Requirement) => {
+    setEditingReq(req);
+    setEditForm({ title: req.title, description: req.description });
+    setIsEditOpen(true);
+  };
+
+  const handleSaveEdit = async (withReAnalyze: boolean) => {
+    if (!selectedProjectId || !editingReq || !editForm.title.trim()) return;
+    setIsSaving(true);
+    try {
+      await requirementAPI.update(selectedProjectId, editingReq.id, {
+        title: editForm.title,
+        description: editForm.description,
+      });
+      setIsEditOpen(false);
+      if (withReAnalyze) {
+        setReAnalyzingId(editingReq.id);
+        try {
+          await reAnalyzeRequirement(selectedProjectId, editingReq.id);
+        } catch {
+          // 静默处理
+        } finally {
+          setReAnalyzingId(null);
+        }
+      } else {
+        await fetchRequirements(selectedProjectId);
+      }
+    } catch {
+      // 静默处理
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleOpenDelete = (req: Requirement) => {
+    setDeletingReq(req);
+    setIsDeleteOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!selectedProjectId || !deletingReq) return;
+    setIsDeleting(true);
+    try {
+      await deleteRequirement(selectedProjectId, deletingReq.id);
+      setIsDeleteOpen(false);
+    } catch {
+      // 静默处理
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleReAnalyze = async (reqId: string) => {
+    if (!selectedProjectId) return;
+    setReAnalyzingId(reqId);
+    try {
+      await reAnalyzeRequirement(selectedProjectId, reqId);
+    } catch {
+      // 静默处理
+    } finally {
+      setReAnalyzingId(null);
+    }
+  };
+
   const handleImportAndAnalyze = async () => {
     if (!selectedProjectId || (!importContent.trim() && !importAttachmentId)) return;
     setIsImporting(true);
@@ -588,6 +671,68 @@ export default function RequirementsPage() {
     }
   };
 
+  // 按来源分类需求
+  const userRequirements = requirements.filter((req) => !req.is_ai_extracted);
+  const aiRequirements = requirements.filter((req) => req.is_ai_extracted);
+
+  const renderRequirementItem = (req: Requirement, isUserReq: boolean) => (
+    <div key={req.id} className="relative">
+      <AnalysisResultCard requirement={req} />
+      <div className="mt-2 flex justify-end items-center gap-2">
+        {isUserReq && (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleOpenEdit(req)}
+            >
+              <Pencil className="mr-1 h-3 w-3" />
+              编辑
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleOpenDelete(req)}
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="mr-1 h-3 w-3" />
+              删除
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => handleReAnalyze(req.id)}
+              disabled={reAnalyzingId === req.id}
+            >
+              {reAnalyzingId === req.id ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1 h-3 w-3" />
+              )}
+              重新分析
+            </Button>
+          </>
+        )}
+        {req.status === "analyzed" && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => handleConfirm(req.id)}
+          >
+            <CheckCircle2 className="mr-2 h-4 w-4" />
+            确认需求
+          </Button>
+        )}
+        {req.status === "confirmed" && (
+          <span className="text-sm text-green-600 font-medium flex items-center gap-1">
+            <CheckCircle2 className="h-4 w-4" />
+            已确认
+          </span>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-full">
       <AppHeader title="需求分析" />
@@ -601,7 +746,11 @@ export default function RequirementsPage() {
               onValueChange={(v) => setSelectedProjectId(v ?? "")}
             >
               <SelectTrigger className="w-[300px]">
-                <SelectValue placeholder="请选择项目" />
+                <SelectValue placeholder="请选择项目">
+                  {selectedProjectId
+                    ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
+                    : undefined}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {projects.map((p) => (
@@ -725,7 +874,11 @@ export default function RequirementsPage() {
                           onValueChange={(v) => setImportAttachmentId(v ?? "")}
                         >
                           <SelectTrigger>
-                            <SelectValue placeholder="选择已上传的附件" />
+                            <SelectValue placeholder="选择已上传的附件">
+                              {importAttachmentId
+                                ? attachments.find((att) => att.id === importAttachmentId)?.filename ?? importAttachmentId
+                                : undefined}
+                            </SelectValue>
                           </SelectTrigger>
                           <SelectContent>
                             {attachments.map((att) => (
@@ -826,24 +979,28 @@ export default function RequirementsPage() {
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-4">
-            {requirements.map((req) => (
-              <div key={req.id} className="relative">
-                <AnalysisResultCard requirement={req} />
-                {req.status === "analyzed" && (
-                  <div className="mt-2 flex justify-end">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleConfirm(req.id)}
-                    >
-                      <CheckCircle2 className="mr-2 h-4 w-4" />
-                      确认需求
-                    </Button>
-                  </div>
-                )}
+          <div className="space-y-6">
+            {/* 用户添加的需求 */}
+            {userRequirements.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b">
+                  <h3 className="text-base font-semibold">用户需求</h3>
+                  <Badge variant="secondary">{userRequirements.length} 条</Badge>
+                </div>
+                {userRequirements.map((req) => renderRequirementItem(req, true))}
               </div>
-            ))}
+            )}
+            {/* AI 提取的需求 */}
+            {aiRequirements.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b">
+                  <BrainCircuit className="h-4 w-4 text-purple-600" />
+                  <h3 className="text-base font-semibold">AI 提取需求</h3>
+                  <Badge variant="secondary">{aiRequirements.length} 条</Badge>
+                </div>
+                {aiRequirements.map((req) => renderRequirementItem(req, false))}
+              </div>
+            )}
           </div>
         )}
 
@@ -898,6 +1055,112 @@ export default function RequirementsPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* 编辑需求对话框 */}
+        <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>编辑需求</DialogTitle>
+              <DialogDescription>
+                修改需求信息，保存后可选择是否重新进行 AI 分析
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-title">需求标题</Label>
+                <Input
+                  id="edit-title"
+                  placeholder="请输入需求标题"
+                  value={editForm.title}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, title: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="space-y-2" data-color-mode="light">
+                <Label htmlFor="edit-desc">需求描述</Label>
+                <MDEditor
+                  value={editForm.description}
+                  onChange={(val) =>
+                    setEditForm((prev) => ({ ...prev, description: val || "" }))
+                  }
+                  height={200}
+                  preview="edit"
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setIsEditOpen(false)}
+                disabled={isSaving}
+              >
+                取消
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => handleSaveEdit(false)}
+                disabled={isSaving || !editForm.title.trim()}
+              >
+                {isSaving ? "保存中..." : "仅保存"}
+              </Button>
+              <Button
+                onClick={() => handleSaveEdit(true)}
+                disabled={isSaving || !editForm.title.trim()}
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    处理中...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    保存并重新分析
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 删除确认对话框 */}
+        <Dialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>确认删除</DialogTitle>
+              <DialogDescription>
+                确定要删除需求「{deletingReq?.title}」吗？从该需求 AI 提取的所有子需求也将被一并删除。此操作无法撤销。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setIsDeleteOpen(false)}
+                disabled={isDeleting}
+              >
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    删除中...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    确认删除
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

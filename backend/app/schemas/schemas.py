@@ -85,6 +85,7 @@ class RequirementCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(min_length=1)
     source: str | None = None
+    parent_id: uuid.UUID | None = None
 
 
 class RequirementUpdate(BaseModel):
@@ -104,6 +105,8 @@ class RequirementPublic(BaseModel):
     req_type: str | None
     priority: str | None
     status: str
+    is_ai_extracted: bool = False
+    parent_id: uuid.UUID | None = None
     analysis_result: dict | None = None
     created_by: uuid.UUID
     created_at: datetime | None = None

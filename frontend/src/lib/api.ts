@@ -80,6 +80,10 @@ export const requirementAPI = {
     }),
   generateDiagrams: (projectId: string, reqId: string) =>
     api.post(`/projects/${projectId}/requirements/${reqId}/generate-diagrams`),
+  delete: (projectId: string, reqId: string) =>
+    api.delete(`/projects/${projectId}/requirements/${reqId}`),
+  reAnalyze: (projectId: string, reqId: string) =>
+    api.post(`/projects/${projectId}/requirements/${reqId}/re-analyze`),
 };
 
 // ===== 架构 API =====

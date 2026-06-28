@@ -135,7 +135,9 @@ export default function RegisterPage() {
                 onValueChange={(v) => handleChange("role", v ?? "RE")}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="选择角色" />
+                  <SelectValue placeholder="选择角色">
+                    {form.role === "RE" ? "需求工程师" : form.role === "SA" ? "系统架构师" : form.role}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="RE">需求工程师</SelectItem>

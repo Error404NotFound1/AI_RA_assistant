@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, Float, JSON
+from sqlalchemy import String, Text, DateTime, ForeignKey, Integer, Float, JSON, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -41,6 +41,10 @@ class Requirement(Base):
     req_type: Mapped[str] = mapped_column(String(10), nullable=True)  # FR / NFR, AI 分析后填充
     priority: Mapped[str] = mapped_column(String(10), nullable=True)  # MoSCoW, AI 分析后填充
     status: Mapped[str] = mapped_column(String(20), default=RequirementStatus.DRAFT)
+    is_ai_extracted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")  # 是否为 AI 提取的需求
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="CASCADE"), nullable=True, index=True
+    )  # 父需求 ID（AI 提取的子需求指向原始用户需求）
     # AI 分析结果 (JSONB)
     analysis_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
@@ -49,6 +53,8 @@ class Requirement(Base):
 
     # 关系
     project = relationship("Project", back_populates="requirements")
+    children = relationship("Requirement", back_populates="parent", cascade="all, delete-orphan", lazy="noload")
+    parent = relationship("Requirement", back_populates="children", remote_side="Requirement.id", lazy="noload")
     user_stories = relationship("UserStory", back_populates="requirement", cascade="all, delete-orphan", lazy="noload")
     quality_evaluation = relationship("QualityEvaluation", back_populates="requirement", uselist=False, lazy="noload")
     traceability_links = relationship("TraceabilityLink", back_populates="requirement", cascade="all, delete-orphan", lazy="noload")

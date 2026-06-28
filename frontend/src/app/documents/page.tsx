@@ -195,7 +195,11 @@ export default function DocumentsPage() {
               onValueChange={(v) => setSelectedProjectId(v ?? "")}
             >
               <SelectTrigger className="w-[300px] max-w-full">
-                <SelectValue placeholder="请选择项目" />
+                <SelectValue placeholder="请选择项目">
+                  {selectedProjectId
+                    ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
+                    : undefined}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {projects.map((p) => (
@@ -260,7 +264,11 @@ export default function DocumentsPage() {
                 <Label className="whitespace-nowrap">版本对比</Label>
                 <Select value={compareV1} onValueChange={(v) => setCompareV1(v ?? "")}>
                   <SelectTrigger className="w-[200px]">
-                    <SelectValue placeholder="选择版本1" />
+                    <SelectValue placeholder="选择版本1">
+                      {compareV1
+                        ? (() => { const d = documents.find((doc) => doc.id === compareV1); return d ? `${d.title} (v${d.version})` : compareV1; })()
+                        : undefined}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {documents.map((doc) => (
@@ -273,7 +281,11 @@ export default function DocumentsPage() {
                 <span className="text-muted-foreground">vs</span>
                 <Select value={compareV2} onValueChange={(v) => setCompareV2(v ?? "")}>
                   <SelectTrigger className="w-[200px]">
-                    <SelectValue placeholder="选择版本2" />
+                    <SelectValue placeholder="选择版本2">
+                      {compareV2
+                        ? (() => { const d = documents.find((doc) => doc.id === compareV2); return d ? `${d.title} (v${d.version})` : compareV2; })()
+                        : undefined}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     {documents.map((doc) => (

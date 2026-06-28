@@ -328,7 +328,9 @@ export default function AdminPage() {
                             >
                               <SelectTrigger className="h-8 w-[120px]">
                                 <UserCog className="h-3 w-3 mr-1" />
-                                <SelectValue />
+                                <SelectValue>
+                                  {u.role === "RE" ? "需求工程师" : u.role === "SA" ? "系统架构师" : u.role === "admin" ? "管理员" : u.role}
+                                </SelectValue>
                               </SelectTrigger>
                               <SelectContent>
                                 <SelectItem value="RE">需求工程师</SelectItem>

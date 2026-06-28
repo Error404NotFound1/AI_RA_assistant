@@ -155,7 +155,11 @@ export default function TraceabilityPage() {
               onValueChange={(v) => setSelectedProjectId(v ?? "")}
             >
               <SelectTrigger className="w-[300px]">
-                <SelectValue placeholder="请选择项目" />
+                <SelectValue placeholder="请选择项目">
+                  {selectedProjectId
+                    ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
+                    : undefined}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {projects.map((p) => (

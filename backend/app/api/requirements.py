@@ -1,7 +1,6 @@
 """需求分析 API - AI 辅助需求分析核心功能"""
 
 import asyncio
-import difflib
 import json
 import uuid
 from fastapi import APIRouter, HTTPException, status
@@ -165,6 +164,7 @@ async def create_requirement(
         title=data.title,
         description=data.description,
         source=data.source,
+        parent_id=data.parent_id,
         created_by=current_user.id,
     )
     db.add(req)
@@ -206,34 +206,10 @@ async def update_requirement(
     return req
 
 
-@router.post("/analyze", response_model=dict)
-async def analyze_requirements(
-    project_id: uuid.UUID, data: RequirementAnalyzeRequest, current_user: RequireRE, db: DBSession,
-):
-    """AI 辅助需求分析 - 提取 FR/NFR + 分类排序 + 质量评估"""
-    # 获取项目信息
-    proj_result = await db.execute(select(Project).where(Project.id == project_id))
-    project = proj_result.scalar_one_or_none()
-    if not project:
-        raise HTTPException(status_code=404, detail="项目不存在")
-
-    # 获取待分析需求
-    query = select(Requirement).where(Requirement.project_id == project_id)
-    if data.requirement_ids:
-        query = query.where(Requirement.id.in_(data.requirement_ids))
-    else:
-        query = query.where(Requirement.status == RequirementStatus.DRAFT)
-
-    result = await db.execute(query)
-    requirements = list(result.scalars().all())
-    if not requirements:
-        raise HTTPException(status_code=400, detail="没有待分析的需求")
-
-    # 合并需求描述（使用序号而非 UUID，根因 D 修复）
-    req_text = "\n\n".join(
-        [f"[REQ-{i+1}] {r.title}: {r.description}" for i, r in enumerate(requirements)]
-    )
-    provider = get_llm_provider()
+async def _analyze_single_user_requirement(provider, project, user_req, current_user, db):
+    """对单条用户需求执行 AI 分析，创建子需求并设置 parent_id"""
+    project_id = project.id
+    req_text = f"[REQ-1] {user_req.title}: {user_req.description}"
 
     # Step 1: 提取 FR/NFR
     extractor_prompt = EXTRACTOR_USER_TEMPLATE.format(
@@ -241,120 +217,68 @@ async def analyze_requirements(
         project_description=project.description or "无",
         requirement_text=req_text,
     )
-    try:
-        extract_result = await provider.complete(EXTRACTOR_SYSTEM_PROMPT, extractor_prompt)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 需求分析失败: {str(e)}")
-
+    extract_result = await provider.complete(EXTRACTOR_SYSTEM_PROMPT, extractor_prompt)
     if not extract_result.parsed_json:
-        raise HTTPException(status_code=500, detail="AI 分析结果解析失败，请重试")
-
+        raise ValueError("AI 分析结果解析失败")
     analysis = extract_result.parsed_json
 
-    # 准备并行步骤的 prompt
+    # 并行: 分类 + 用例生成
     req_json = json.dumps(analysis, ensure_ascii=False)
     classifier_prompt = CLASSIFIER_USER_TEMPLATE.format(project_name=project.name, requirements_json=req_json)
     user_stories_json = json.dumps(analysis.get("user_stories", []), ensure_ascii=False)
     use_case_prompt = USE_CASE_GENERATOR_USER_TEMPLATE.format(
-        project_name=project.name,
-        requirements_json=req_json,
-        user_stories_json=user_stories_json,
+        project_name=project.name, requirements_json=req_json, user_stories_json=user_stories_json,
     )
-
-    # 并行执行 Step 2 (分类) + Step 3 (用例生成)
     results = await asyncio.gather(
         provider.complete(CLASSIFIER_SYSTEM_PROMPT, classifier_prompt),
         provider.complete(USE_CASE_GENERATOR_SYSTEM_PROMPT, use_case_prompt),
         return_exceptions=True,
     )
     classify_result, use_case_result = results
-
-    # 处理分类结果
     if not isinstance(classify_result, Exception) and classify_result.parsed_json:
         analysis["classification"] = classify_result.parsed_json
-
-    # 处理用例结果
     if not isinstance(use_case_result, Exception) and use_case_result.parsed_json:
         analysis["use_cases"] = use_case_result.parsed_json.get("use_cases", [])
     else:
         analysis["use_cases"] = []
 
-    # Step 4: 图表规划 + 按需生成 PlantUML 图表
+    # 图表
     try:
         diagram_plan, diagrams = await _plan_and_generate_diagrams(
             provider, project, analysis, analysis["use_cases"]
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI 需求分析失败: {str(e)}")
+    except Exception:
+        diagram_plan, diagrams = {}, {}
     analysis["diagram_plan"] = diagram_plan
     analysis["diagrams"] = diagrams
 
-    # ── 后处理：将分析结果持久化到结构化表 ──
-    # 根因 D 修复：使用标题匹配代替 UUID 匹配
-    created_reqs: dict[str, Requirement] = {}  # 映射: FR-001 -> Requirement
-    used_indices: set[int] = set()
-
-    def _match_by_title(title: str) -> Requirement | None:
-        """通过标题精确或模糊匹配现有 Requirement"""
-        # 精确匹配
-        for i, req in enumerate(requirements):
-            if i not in used_indices and req.title == title:
-                used_indices.add(i)
-                return req
-        # 模糊匹配（相似度 > 0.6）
-        best_ratio = 0.0
-        best_idx = -1
-        for i, req in enumerate(requirements):
-            if i not in used_indices:
-                ratio = difflib.SequenceMatcher(None, title, req.title).ratio()
-                if ratio > best_ratio:
-                    best_ratio = ratio
-                    best_idx = i
-        if best_idx >= 0 and best_ratio > 0.6:
-            used_indices.add(best_idx)
-            return requirements[best_idx]
-        return None
-
-    # 1. 匹配 FR，回填 req_type
+    # 创建子需求记录（parent_id = user_req.id）
+    created_reqs: dict[str, Requirement] = {}
     for idx, fr in enumerate(analysis.get("functional_requirements", [])):
         fr_id = fr.get("id") or fr.get("requirement_id") or f"FR-{idx+1:03d}"
-        title = fr.get("title", "")
-        req = _match_by_title(title)
-        if not req:
-            # 没匹配上则创建新的 Requirement 记录（根因 C 修复）
-            req = Requirement(
-                project_id=project_id,
-                title=title or "未命名需求",
-                description=fr.get("description", ""),
-                source=fr.get("source", "AI提取"),
-                created_by=current_user.id,
-            )
-            db.add(req)
-            await db.flush()
-            requirements.append(req)
+        req = Requirement(
+            project_id=project_id, title=fr.get("title", "未命名需求"),
+            description=fr.get("description", ""), source=fr.get("source", "AI提取"),
+            is_ai_extracted=True, parent_id=user_req.id, created_by=current_user.id,
+        )
+        db.add(req)
+        await db.flush()
         req.req_type = "FR"
         created_reqs[fr_id] = req
 
-    # 匹配 NFR，回填 req_type
     for idx, nfr in enumerate(analysis.get("non_functional_requirements", [])):
         nfr_id = nfr.get("id") or nfr.get("requirement_id") or f"NFR-{idx+1:03d}"
-        title = nfr.get("title", "")
-        req = _match_by_title(title)
-        if not req:
-            req = Requirement(
-                project_id=project_id,
-                title=title or "未命名需求",
-                description=nfr.get("description", ""),
-                source=nfr.get("source", "AI提取"),
-                created_by=current_user.id,
-            )
-            db.add(req)
-            await db.flush()
-            requirements.append(req)
+        req = Requirement(
+            project_id=project_id, title=nfr.get("title", "未命名需求"),
+            description=nfr.get("description", ""), source=nfr.get("source", "AI提取"),
+            is_ai_extracted=True, parent_id=user_req.id, created_by=current_user.id,
+        )
+        db.add(req)
+        await db.flush()
         req.req_type = "NFR"
         created_reqs[nfr_id] = req
 
-    # 2. 回填 priority（使用 created_reqs 业务编号匹配）
+    # 回填 priority
     classification = analysis.get("classification", {})
     for item in classification.get("classified_requirements", []):
         item_id = item.get("id", "")
@@ -362,38 +286,41 @@ async def analyze_requirements(
         if req:
             req.priority = item.get("priority")
 
-    # 3. 清除并重建 UserStory 记录
-    req_ids = [r.id for r in requirements]
-    await db.execute(delete(UserStory).where(UserStory.requirement_id.in_(req_ids)))
-    for story in analysis.get("user_stories", []):
-        story_req_id = story.get("requirement_id", "")
-        req = created_reqs.get(story_req_id)
-        if req:
-            db.add(UserStory(
-                requirement_id=req.id,
-                role=story.get("role", ""),
-                goal=story.get("goal", ""),
-                benefit=story.get("benefit", ""),
-                acceptance_criteria=story.get("acceptance_criteria"),
-            ))
+    # UserStory
+    child_ids = [r.id for r in created_reqs.values()]
+    if child_ids:
+        await db.execute(delete(UserStory).where(UserStory.requirement_id.in_(child_ids)))
+        for story in analysis.get("user_stories", []):
+            req = created_reqs.get(story.get("requirement_id", ""))
+            if req:
+                db.add(UserStory(
+                    requirement_id=req.id, role=story.get("role", ""),
+                    goal=story.get("goal", ""), benefit=story.get("benefit", ""),
+                    acceptance_criteria=story.get("acceptance_criteria"),
+                ))
 
-    # 5. 清除并重建 UseCase 记录
-    await db.execute(delete(UseCase).where(UseCase.requirement_id.in_(req_ids)))
+    # UseCase（同时为子需求和原始用户需求创建）
+    if child_ids:
+        await db.execute(delete(UseCase).where(UseCase.requirement_id.in_(child_ids)))
     for uc in analysis.get("use_cases", []):
-        uc_req_id = uc.get("requirement_id", "")
-        req = created_reqs.get(uc_req_id)
+        req = created_reqs.get(uc.get("requirement_id", ""))
         if req:
             db.add(UseCase(
-                requirement_id=req.id,
-                title=uc.get("title", ""),
-                actor=uc.get("actor", ""),
-                preconditions=uc.get("preconditions"),
-                main_flow=uc.get("main_flow"),
-                alternative_flows=uc.get("alternative_flows"),
+                requirement_id=req.id, title=uc.get("title", ""),
+                actor=uc.get("actor", ""), preconditions=uc.get("preconditions"),
+                main_flow=uc.get("main_flow"), alternative_flows=uc.get("alternative_flows"),
                 postconditions=uc.get("postconditions"),
             ))
+    # 为原始用户需求也创建用例（向后兼容）
+    for uc in analysis.get("use_cases", []):
+        db.add(UseCase(
+            requirement_id=user_req.id, title=uc.get("title", ""),
+            actor=uc.get("actor", ""), preconditions=uc.get("preconditions"),
+            main_flow=uc.get("main_flow"), alternative_flows=uc.get("alternative_flows"),
+            postconditions=uc.get("postconditions"),
+        ))
 
-    # 保存分析结果到需求记录（每条需求存储独立的分析结果）
+    # 存储分析结果
     for biz_id, req in created_reqs.items():
         req_analysis = {
             "intent_analysis": analysis.get("intent_analysis", {}),
@@ -422,17 +349,96 @@ async def analyze_requirements(
         req.analysis_result = req_analysis
         req.status = RequirementStatus.ANALYZED
 
-    # 兜底：未被匹配的原始需求也标记为已分析，存储完整分析结果
-    matched_req_ids = set()
-    for req in created_reqs.values():
-        if hasattr(req, 'id'):
-            matched_req_ids.add(req.id)
+    # 原始用户需求标记为已分析
+    user_req.analysis_result = analysis
+    user_req.status = RequirementStatus.ANALYZED
+    # 设置原始需求的 req_type（向后兼容）
+    if analysis.get("functional_requirements"):
+        user_req.req_type = "FR"
+    elif analysis.get("non_functional_requirements"):
+        user_req.req_type = "NFR"
 
-    for req in requirements:
-        if req.id not in matched_req_ids and req.status == RequirementStatus.DRAFT:
-            # 原始需求存储完整的分析结果（包含所有提取的 FR/NFR/用例/图表等）
-            req.analysis_result = analysis
-            req.status = RequirementStatus.ANALYZED
+    return {
+        "requirement_id": str(user_req.id),
+        "title": user_req.title,
+        "extracted_count": len(created_reqs),
+        "analysis": analysis,
+        "created_reqs": created_reqs,
+        "diagrams": diagrams,
+    }
+
+
+@router.post("/analyze", response_model=dict)
+async def analyze_requirements(
+    project_id: uuid.UUID, data: RequirementAnalyzeRequest, current_user: RequireRE, db: DBSession,
+):
+    """AI 辅助需求分析 - 逐条分析用户需求，提取 FR/NFR + 分类 + 用例 + 图表"""
+    # 获取项目信息
+    proj_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = proj_result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 获取待分析需求（仅用户需求：非 AI 提取）
+    query = select(Requirement).where(
+        Requirement.project_id == project_id,
+        Requirement.is_ai_extracted == False,
+    )
+    if data.requirement_ids:
+        query = query.where(Requirement.id.in_(data.requirement_ids))
+    else:
+        query = query.where(Requirement.status == RequirementStatus.DRAFT)
+
+    result = await db.execute(query)
+    requirements = list(result.scalars().all())
+    if not requirements:
+        raise HTTPException(status_code=400, detail="没有待分析的需求")
+
+    provider = get_llm_provider()
+    all_analyses = []
+    errors = []
+
+    # 逐条分析用户需求
+    for user_req in requirements:
+        try:
+            analysis_result = await _analyze_single_user_requirement(
+                provider, project, user_req, current_user, db
+            )
+            all_analyses.append(analysis_result)
+        except Exception as e:
+            errors.append({"requirement_id": str(user_req.id), "title": user_req.title, "error": str(e)})
+
+    if not all_analyses:
+        raise HTTPException(status_code=500, detail=f"所有需求分析失败: {errors}")
+
+    # 聚合结果
+    all_created_reqs = {}
+    all_diagrams = {}
+    combined_analysis = {
+        "intent_analysis": {},
+        "functional_requirements": [],
+        "non_functional_requirements": [],
+        "user_stories": [],
+        "classification": {"classified_requirements": []},
+        "use_cases": [],
+    }
+    for a in all_analyses:
+        analysis = a["analysis"]
+        all_created_reqs.update(a["created_reqs"])
+        all_diagrams.update(a.get("diagrams", {}))
+        combined_analysis["intent_analysis"] = analysis.get("intent_analysis", {})
+        combined_analysis["functional_requirements"].extend(analysis.get("functional_requirements", []))
+        combined_analysis["non_functional_requirements"].extend(analysis.get("non_functional_requirements", []))
+        combined_analysis["user_stories"].extend(analysis.get("user_stories", []))
+        combined_analysis["use_cases"].extend(analysis.get("use_cases", []))
+        classification = analysis.get("classification", {})
+        combined_analysis["classification"]["classified_requirements"].extend(
+            classification.get("classified_requirements", [])
+        )
+
+    combined_analysis["all_diagrams"] = all_diagrams
+    combined_analysis["diagrams"] = all_diagrams
+    combined_analysis["diagram_plan"] = {}
 
     # 记录操作日志
     db.add(OperationLog(
@@ -443,10 +449,8 @@ async def analyze_requirements(
         detail={"requirement_count": len(requirements)},
     ))
 
-    # 项目级所有图表（供前端在项目层面展示用例图等全局图表）
-    analysis["all_diagrams"] = diagrams
-
-    return analysis
+    combined_analysis["message"] = f"成功分析 {len(all_analyses)} 条需求"
+    return combined_analysis
 
 
 @router.post("/import-and-analyze", response_model=dict)
@@ -520,6 +524,7 @@ async def import_and_analyze(
             source=fr.get("source", "文档提取"),
             req_type="FR",
             status=RequirementStatus.DRAFT,
+            is_ai_extracted=True,
             created_by=current_user.id,
         )
         db.add(req)
@@ -535,6 +540,7 @@ async def import_and_analyze(
             source=nfr.get("source", "文档提取"),
             req_type="NFR",
             status=RequirementStatus.DRAFT,
+            is_ai_extracted=True,
             created_by=current_user.id,
         )
         db.add(req)
@@ -663,6 +669,7 @@ async def import_and_analyze(
                 "priority": req.priority,
                 "status": req.status,
                 "source": req.source,
+                "is_ai_extracted": req.is_ai_extracted,
                 "analysis_result": req.analysis_result,
             }
             for req in created_reqs.values()
@@ -843,3 +850,97 @@ async def regenerate_diagrams(
         "diagrams": req_diagrams,
         "all_diagrams": diagrams,
     }
+
+
+@router.delete("/{req_id}", response_model=MessageResponse)
+async def delete_requirement(
+    project_id: uuid.UUID, req_id: uuid.UUID, current_user: CurrentUser, db: DBSession,
+):
+    """删除需求（级联删除子需求及关联数据）"""
+    result = await db.execute(
+        select(Requirement).where(Requirement.id == req_id, Requirement.project_id == project_id)
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="需求不存在")
+
+    # 查找子需求
+    child_result = await db.execute(
+        select(Requirement).where(Requirement.parent_id == req_id)
+    )
+    children = list(child_result.scalars().all())
+    child_ids = [c.id for c in children]
+
+    # 删除子需求的关联数据
+    if child_ids:
+        await db.execute(delete(UserStory).where(UserStory.requirement_id.in_(child_ids)))
+        await db.execute(delete(UseCase).where(UseCase.requirement_id.in_(child_ids)))
+        await db.execute(delete(QualityEvaluation).where(QualityEvaluation.requirement_id.in_(child_ids)))
+        await db.execute(delete(Requirement).where(Requirement.id.in_(child_ids)))
+
+    # 删除当前需求的关联数据（cascade 会自动处理，但显式删除更安全）
+    await db.execute(delete(UserStory).where(UserStory.requirement_id == req_id))
+    await db.execute(delete(UseCase).where(UseCase.requirement_id == req_id))
+    await db.execute(delete(QualityEvaluation).where(QualityEvaluation.requirement_id == req_id))
+
+    # 删除需求本身
+    await db.execute(delete(Requirement).where(Requirement.id == req_id))
+    await db.commit()
+
+    return MessageResponse(message="需求已删除")
+
+
+@router.post("/{req_id}/re-analyze", response_model=dict)
+async def re_analyze_requirement(
+    project_id: uuid.UUID, req_id: uuid.UUID, current_user: RequireRE, db: DBSession,
+):
+    """重新分析单条用户需求：删除旧子需求后重新 AI 分析"""
+    result = await db.execute(
+        select(Requirement).where(
+            Requirement.id == req_id,
+            Requirement.project_id == project_id,
+            Requirement.is_ai_extracted == False,
+        )
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="用户需求不存在或该需求为 AI 提取的需求")
+
+    # 获取项目
+    proj_result = await db.execute(select(Project).where(Project.id == project_id))
+    project = proj_result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 删除旧子需求及其关联数据
+    child_result = await db.execute(
+        select(Requirement).where(Requirement.parent_id == req_id)
+    )
+    children = list(child_result.scalars().all())
+    child_ids = [c.id for c in children]
+
+    if child_ids:
+        await db.execute(delete(UserStory).where(UserStory.requirement_id.in_(child_ids)))
+        await db.execute(delete(UseCase).where(UseCase.requirement_id.in_(child_ids)))
+        await db.execute(delete(QualityEvaluation).where(QualityEvaluation.requirement_id.in_(child_ids)))
+        await db.execute(delete(Requirement).where(Requirement.id.in_(child_ids)))
+
+    # 重新分析
+    provider = get_llm_provider()
+    try:
+        analysis_result = await _analyze_single_user_requirement(
+            provider, project, req, current_user, db
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI 重新分析失败: {str(e)}")
+
+    # 记录操作日志
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="re_analyze",
+        target_type="requirement",
+        target_id=req_id,
+        detail={"extracted_count": analysis_result["extracted_count"]},
+    ))
+
+    return analysis_result["analysis"]

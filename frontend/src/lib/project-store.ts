@@ -84,12 +84,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 export interface Requirement {
   id: string;
   project_id: string;
+  parent_id?: string | null;
   title: string;
   description: string;
   source: string | null;
   req_type: string | null;
   priority: string | null;
   status: string;
+  is_ai_extracted: boolean;
   analysis_result: Record<string, unknown> | null;
   created_by: string;
   created_at: string | null;
@@ -130,6 +132,8 @@ interface RequirementState {
   ) => Promise<void>;
   confirmRequirement: (projectId: string, reqId: string) => Promise<void>;
   fetchUseCases: (projectId: string, reqId: string) => Promise<void>;
+  deleteRequirement: (projectId: string, reqId: string) => Promise<void>;
+  reAnalyzeRequirement: (projectId: string, reqId: string) => Promise<unknown>;
   setCurrentRequirement: (req: Requirement | null) => void;
 }
 
@@ -191,7 +195,12 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
 
   confirmRequirement: async (projectId, reqId) => {
     await requirementAPI.confirm(projectId, reqId);
-    await get().fetchRequirement(projectId, reqId);
+    // 立即更新本地状态，无需刷新页面
+    set((state) => ({
+      requirements: state.requirements.map((req) =>
+        req.id === reqId ? { ...req, status: "confirmed" } : req
+      ),
+    }));
   },
 
   fetchUseCases: async (projectId, reqId) => {
@@ -201,6 +210,22 @@ export const useRequirementStore = create<RequirementState>((set, get) => ({
     } catch {
       // 静默处理
     }
+  },
+
+  deleteRequirement: async (projectId, reqId) => {
+    await requirementAPI.delete(projectId, reqId);
+    set((state) => ({
+      requirements: state.requirements.filter(
+        (req) => req.id !== reqId && req.parent_id !== reqId
+      ),
+    }));
+  },
+
+  reAnalyzeRequirement: async (projectId, reqId) => {
+    const response = await requirementAPI.reAnalyze(projectId, reqId);
+    const { fetchRequirements } = get();
+    await fetchRequirements(projectId);
+    return response.data;
   },
 
   setCurrentRequirement: (req) => set({ currentRequirement: req }),
