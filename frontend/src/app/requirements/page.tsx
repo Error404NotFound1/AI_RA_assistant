@@ -106,8 +106,147 @@ function PlantUMLDiagram({ code, title, type }: { code: string; title: string; t
   );
 }
 
+// 质量评估数据结构
+interface QualityEvaluation {
+  completeness: number | null;
+  consistency: string | null;
+  verifiability: number | null;
+  unambiguity: number | null;
+  traceability: string | null;
+  feasibility: number | null;
+  singularity: string | null;
+  suggestions: Record<string, unknown> | null;
+}
+
+function QualityScoreBar({ label, value }: { label: string; value: number | null }) {
+  if (value === null || value === undefined) return null;
+  const percentage = Math.min(value * 10, 100);
+  const colorClass =
+    value >= 8
+      ? "bg-green-500"
+      : value >= 5
+      ? "bg-blue-500"
+      : "bg-yellow-500";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="font-medium">{value}/10</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${colorClass}`}
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QualityPassBadge({ label, value }: { label: string; value: string | null }) {
+  if (value === null || value === undefined) return null;
+  const passed = value === "通过";
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <Badge
+        variant="outline"
+        className={passed ? "bg-green-50 text-green-700 border-green-300" : "bg-red-50 text-red-700 border-red-300"}
+      >
+        {value}
+      </Badge>
+    </div>
+  );
+}
+
+function QualityPanel({ projectId, reqId }: { projectId: string; reqId: string }) {
+  const [quality, setQuality] = useState<QualityEvaluation | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    requirementAPI
+      .getQuality(projectId, reqId)
+      .then((res) => {
+        if (!cancelled) setQuality(res.data);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [projectId, reqId]);
+
+  if (loading) {
+    return (
+      <div className="rounded-md border p-4">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          加载质量评估...
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !quality) {
+    return (
+      <div className="rounded-md border p-4">
+        <p className="text-sm text-muted-foreground">暂无质量评估</p>
+      </div>
+    );
+  }
+
+  const hasSuggestions = quality.suggestions && Object.keys(quality.suggestions).length > 0;
+
+  return (
+    <div className="rounded-md border p-4 space-y-3">
+      <h4 className="text-sm font-semibold flex items-center gap-1">
+        <CheckCircle2 className="h-4 w-4 text-green-600" />
+        质量评估（INCOSE）
+      </h4>
+      {/* 数值型属性 */}
+      <div className="space-y-2">
+        <QualityScoreBar label="完整性" value={quality.completeness} />
+        <QualityScoreBar label="可验证性" value={quality.verifiability} />
+        <QualityScoreBar label="无歧义性" value={quality.unambiguity} />
+        <QualityScoreBar label="可行性" value={quality.feasibility} />
+      </div>
+      {/* 通过/不通过型属性 */}
+      <Separator />
+      <div className="space-y-2">
+        <QualityPassBadge label="一致性" value={quality.consistency} />
+        <QualityPassBadge label="可追溯性" value={quality.traceability} />
+        <QualityPassBadge label="单一性" value={quality.singularity} />
+      </div>
+      {/* 改进建议 */}
+      {hasSuggestions && (
+        <>
+          <Separator />
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">改进建议</p>
+            <div className="text-xs text-muted-foreground space-y-0.5">
+              {Object.entries(quality.suggestions!).map(([key, val]) => (
+                <p key={key}>
+                  <span className="font-medium">{key}：</span>
+                  {String(val)}
+                </p>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AnalysisResultCard({
   requirement,
+  projectId,
 }: {
   requirement: {
     id: string;
@@ -118,6 +257,7 @@ function AnalysisResultCard({
     analysis_result: Record<string, unknown> | null;
     priority: string | null;
   };
+  projectId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const analysis = requirement.analysis_result as {
@@ -457,6 +597,11 @@ function AnalysisResultCard({
               </div>
             </div>
           )}
+
+          {/* 质量评估 */}
+          {projectId && (
+            <QualityPanel projectId={projectId} reqId={requirement.id} />
+          )}
         </CardContent>
       )}
     </Card>
@@ -677,7 +822,7 @@ export default function RequirementsPage() {
 
   const renderRequirementItem = (req: Requirement, isUserReq: boolean) => (
     <div key={req.id} className="relative">
-      <AnalysisResultCard requirement={req} />
+      <AnalysisResultCard requirement={req} projectId={selectedProjectId} />
       <div className="mt-2 flex justify-end items-center gap-2">
         {isUserReq && (
           <>

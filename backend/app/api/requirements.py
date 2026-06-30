@@ -32,6 +32,7 @@ from app.llm.prompts.requirement_extractor import (
     CLASS_DIAGRAM_SYSTEM_PROMPT, CLASS_DIAGRAM_USER_TEMPLATE,
     DFD_SYSTEM_PROMPT, DFD_USER_TEMPLATE,
     ER_DIAGRAM_SYSTEM_PROMPT, ER_USER_TEMPLATE,
+    QUALITY_CHECKER_SYSTEM_PROMPT, QUALITY_CHECKER_USER_TEMPLATE,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/requirements", tags=["需求"])
@@ -348,6 +349,67 @@ async def _analyze_single_user_requirement(provider, project, user_req, current_
         }
         req.analysis_result = req_analysis
         req.status = RequirementStatus.ANALYZED
+
+    # 质量评估：对所有子需求执行 INCOSE 质量评估
+    try:
+        # 构建需求列表 JSON 供质量评估使用
+        all_reqs_for_eval = []
+        for biz_id, req in created_reqs.items():
+            all_reqs_for_eval.append({
+                "id": biz_id,
+                "title": req.title,
+                "description": req.description,
+                "type": req.req_type,
+            })
+
+        if all_reqs_for_eval:
+            quality_prompt = QUALITY_CHECKER_USER_TEMPLATE.format(
+                project_name=project.name,
+                requirements_json=json.dumps(all_reqs_for_eval, ensure_ascii=False, indent=2),
+            )
+            quality_result = await provider.complete(
+                QUALITY_CHECKER_SYSTEM_PROMPT, quality_prompt, temperature=0.3
+            )
+            if quality_result.parsed_json:
+                evaluations = quality_result.parsed_json.get("evaluations", [])
+                for ev in evaluations:
+                    ev_req_id = ev.get("requirement_id", "")
+                    req = created_reqs.get(ev_req_id)
+                    if not req:
+                        continue
+                    # 检查是否已存在质量评估记录（unique 约束）
+                    existing_eval = await db.execute(
+                        select(QualityEvaluation).where(
+                            QualityEvaluation.requirement_id == req.id
+                        )
+                    )
+                    existing = existing_eval.scalar_one_or_none()
+                    if existing:
+                        # 更新已有记录
+                        existing.completeness = ev.get("completeness")
+                        existing.consistency = ev.get("consistency")
+                        existing.verifiability = ev.get("verifiability")
+                        existing.unambiguity = ev.get("unambiguity")
+                        existing.traceability = ev.get("traceability")
+                        existing.feasibility = ev.get("feasibility")
+                        existing.singularity = ev.get("singularity")
+                        existing.suggestions = ev.get("suggestions")
+                    else:
+                        # 创建新记录
+                        db.add(QualityEvaluation(
+                            requirement_id=req.id,
+                            completeness=ev.get("completeness"),
+                            consistency=ev.get("consistency"),
+                            verifiability=ev.get("verifiability"),
+                            unambiguity=ev.get("unambiguity"),
+                            traceability=ev.get("traceability"),
+                            feasibility=ev.get("feasibility"),
+                            singularity=ev.get("singularity"),
+                            suggestions=ev.get("suggestions"),
+                        ))
+    except Exception:
+        # 质量评估失败不影响主分析流程
+        pass
 
     # 原始用户需求标记为已分析
     user_req.analysis_result = analysis
