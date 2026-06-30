@@ -254,6 +254,10 @@ interface ArchitectureState {
   plantumlCode: string | null;
   isGeneratingDoc: boolean;
   isGeneratingPlantuml: boolean;
+  reviews: any[];
+  adrs: any[];
+  managedComponents: any[];
+  traceabilityLinks: any[];
   fetchSolutions: (projectId: string) => Promise<void>;
   fetchSolution: (projectId: string, solutionId: string) => Promise<void>;
   recommendArchitecture: (
@@ -274,6 +278,22 @@ interface ArchitectureState {
   generateArchDoc: (projectId: string, solutionId: string) => Promise<string | null>;
   generatePlantuml: (projectId: string, solutionId: string) => Promise<string | null>;
   setCurrentSolution: (solution: ArchitectureSolution | null) => void;
+  updateSolution: (projectId: string, solutionId: string, data: Record<string, unknown>) => Promise<void>;
+  fetchReviews: (projectId: string, solutionId: string) => Promise<void>;
+  updateReviewStatus: (projectId: string, solutionId: string, reviewId: string, data: Record<string, unknown>) => Promise<void>;
+  deleteReview: (projectId: string, solutionId: string, reviewId: string) => Promise<void>;
+  fetchADRs: (projectId: string, solutionId: string) => Promise<void>;
+  updateADR: (projectId: string, solutionId: string, adrId: string, data: Record<string, unknown>) => Promise<void>;
+  deleteADR: (projectId: string, solutionId: string, adrId: string) => Promise<void>;
+  fetchManagedComponents: (projectId: string, solutionId: string) => Promise<void>;
+  createManagedComponent: (projectId: string, solutionId: string, data: Record<string, unknown>) => Promise<void>;
+  updateManagedComponent: (projectId: string, solutionId: string, componentId: string, data: Record<string, unknown>) => Promise<void>;
+  deleteManagedComponent: (projectId: string, solutionId: string, componentId: string) => Promise<void>;
+  fetchTraceabilityLinks: (projectId: string, solutionId: string) => Promise<void>;
+  createTraceabilityLink: (projectId: string, solutionId: string, data: Record<string, unknown>) => Promise<void>;
+  updateTraceabilityLink: (projectId: string, solutionId: string, linkId: string, data: Record<string, unknown>) => Promise<void>;
+  deleteTraceabilityLink: (projectId: string, solutionId: string, linkId: string) => Promise<void>;
+  fetchComponentRequirements: (projectId: string, solutionId: string, componentId: string) => Promise<any[]>;
 }
 
 export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
@@ -284,6 +304,10 @@ export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
   plantumlCode: null,
   isGeneratingDoc: false,
   isGeneratingPlantuml: false,
+  reviews: [],
+  adrs: [],
+  managedComponents: [],
+  traceabilityLinks: [],
 
   fetchSolutions: async (projectId) => {
     try {
@@ -355,6 +379,121 @@ export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
   },
 
   setCurrentSolution: (solution) => set({ currentSolution: solution }),
+
+  // ===== Solution 编辑 =====
+  updateSolution: async (projectId: string, solutionId: string, data: Record<string, unknown>) => {
+    await architectureAPI.updateSolution(projectId, solutionId, data);
+    await get().fetchSolution(projectId, solutionId);
+  },
+
+  // ===== Review 管理 =====
+  fetchReviews: async (projectId: string, solutionId: string) => {
+    try {
+      const res = await architectureAPI.listReviews(projectId, solutionId);
+      set({ reviews: res.data });
+    } catch {
+      set({ reviews: [] });
+    }
+  },
+
+  updateReviewStatus: async (projectId: string, solutionId: string, reviewId: string, data: Record<string, unknown>) => {
+    await architectureAPI.updateReview(projectId, solutionId, reviewId, data);
+    const res = await architectureAPI.listReviews(projectId, solutionId);
+    set({ reviews: res.data });
+  },
+
+  deleteReview: async (projectId: string, solutionId: string, reviewId: string) => {
+    await architectureAPI.deleteReview(projectId, solutionId, reviewId);
+    const res = await architectureAPI.listReviews(projectId, solutionId);
+    set({ reviews: res.data });
+  },
+
+  // ===== ADR 管理 =====
+  fetchADRs: async (projectId: string, solutionId: string) => {
+    try {
+      const res = await architectureAPI.listADRs(projectId, solutionId);
+      set({ adrs: res.data });
+    } catch {
+      set({ adrs: [] });
+    }
+  },
+
+  updateADR: async (projectId: string, solutionId: string, adrId: string, data: Record<string, unknown>) => {
+    await architectureAPI.updateADR(projectId, solutionId, adrId, data);
+    const res = await architectureAPI.listADRs(projectId, solutionId);
+    set({ adrs: res.data });
+  },
+
+  deleteADR: async (projectId: string, solutionId: string, adrId: string) => {
+    await architectureAPI.deleteADR(projectId, solutionId, adrId);
+    const res = await architectureAPI.listADRs(projectId, solutionId);
+    set({ adrs: res.data });
+  },
+
+  // ===== Component 管理 =====
+  fetchManagedComponents: async (projectId: string, solutionId: string) => {
+    try {
+      const res = await architectureAPI.listComponents(projectId, solutionId);
+      set({ managedComponents: res.data });
+    } catch {
+      set({ managedComponents: [] });
+    }
+  },
+
+  createManagedComponent: async (projectId: string, solutionId: string, data: Record<string, unknown>) => {
+    await architectureAPI.createComponent(projectId, solutionId, data);
+    const res = await architectureAPI.listComponents(projectId, solutionId);
+    set({ managedComponents: res.data });
+  },
+
+  updateManagedComponent: async (projectId: string, solutionId: string, componentId: string, data: Record<string, unknown>) => {
+    await architectureAPI.updateComponent(projectId, solutionId, componentId, data);
+    const res = await architectureAPI.listComponents(projectId, solutionId);
+    set({ managedComponents: res.data });
+  },
+
+  deleteManagedComponent: async (projectId: string, solutionId: string, componentId: string) => {
+    await architectureAPI.deleteComponent(projectId, solutionId, componentId);
+    const res = await architectureAPI.listComponents(projectId, solutionId);
+    set({ managedComponents: res.data });
+  },
+
+  // ===== TraceabilityLink 管理 =====
+  fetchTraceabilityLinks: async (projectId: string, solutionId: string) => {
+    try {
+      const res = await architectureAPI.listTraceabilityLinks(projectId, solutionId);
+      set({ traceabilityLinks: res.data });
+    } catch {
+      set({ traceabilityLinks: [] });
+    }
+  },
+
+  createTraceabilityLink: async (projectId: string, solutionId: string, data: Record<string, unknown>) => {
+    await architectureAPI.createTraceabilityLink(projectId, solutionId, data);
+    const res = await architectureAPI.listTraceabilityLinks(projectId, solutionId);
+    set({ traceabilityLinks: res.data });
+  },
+
+  updateTraceabilityLink: async (projectId: string, solutionId: string, linkId: string, data: Record<string, unknown>) => {
+    await architectureAPI.updateTraceabilityLink(projectId, solutionId, linkId, data);
+    const res = await architectureAPI.listTraceabilityLinks(projectId, solutionId);
+    set({ traceabilityLinks: res.data });
+  },
+
+  deleteTraceabilityLink: async (projectId: string, solutionId: string, linkId: string) => {
+    await architectureAPI.deleteTraceabilityLink(projectId, solutionId, linkId);
+    const res = await architectureAPI.listTraceabilityLinks(projectId, solutionId);
+    set({ traceabilityLinks: res.data });
+  },
+
+  fetchComponentRequirements: async (projectId: string, solutionId: string, componentId: string) => {
+    try {
+      const res = await architectureAPI.getComponentRequirements(projectId, solutionId, componentId);
+      return res.data;
+    } catch {
+      return [];
+    }
+  },
 }));
 
 // ===== 文档 Store =====

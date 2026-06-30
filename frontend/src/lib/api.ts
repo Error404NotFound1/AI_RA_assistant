@@ -105,6 +105,54 @@ export const architectureAPI = {
     api.post(`/projects/${projectId}/architectures/${solutionId}/generate-doc`),
   generatePlantuml: (projectId: string, solutionId: string) =>
     api.post(`/projects/${projectId}/architectures/${solutionId}/generate-plantuml`),
+
+  // ===== Solution 编辑 =====
+  updateSolution: (projectId: string, solutionId: string, data: Record<string, unknown>) =>
+    api.put(`/projects/${projectId}/architectures/${solutionId}`, data),
+
+  // ===== Review 管理 =====
+  listReviews: (projectId: string, solutionId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/reviews`),
+  getReview: (projectId: string, solutionId: string, reviewId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/reviews/${reviewId}`),
+  updateReview: (projectId: string, solutionId: string, reviewId: string, data: Record<string, unknown>) =>
+    api.put(`/projects/${projectId}/architectures/${solutionId}/reviews/${reviewId}`, data),
+  deleteReview: (projectId: string, solutionId: string, reviewId: string) =>
+    api.delete(`/projects/${projectId}/architectures/${solutionId}/reviews/${reviewId}`),
+
+  // ===== ADR 管理 =====
+  listADRs: (projectId: string, solutionId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/adrs`),
+  getADR: (projectId: string, solutionId: string, adrId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/adrs/${adrId}`),
+  updateADR: (projectId: string, solutionId: string, adrId: string, data: Record<string, unknown>) =>
+    api.put(`/projects/${projectId}/architectures/${solutionId}/adrs/${adrId}`, data),
+  deleteADR: (projectId: string, solutionId: string, adrId: string) =>
+    api.delete(`/projects/${projectId}/architectures/${solutionId}/adrs/${adrId}`),
+
+  // ===== Component CRUD =====
+  listComponents: (projectId: string, solutionId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/components`),
+  getComponent: (projectId: string, solutionId: string, componentId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/components/${componentId}`),
+  createComponent: (projectId: string, solutionId: string, data: Record<string, unknown>) =>
+    api.post(`/projects/${projectId}/architectures/${solutionId}/components`, data),
+  updateComponent: (projectId: string, solutionId: string, componentId: string, data: Record<string, unknown>) =>
+    api.put(`/projects/${projectId}/architectures/${solutionId}/components/${componentId}`, data),
+  deleteComponent: (projectId: string, solutionId: string, componentId: string) =>
+    api.delete(`/projects/${projectId}/architectures/${solutionId}/components/${componentId}`),
+
+  // ===== TraceabilityLink 管理 =====
+  listTraceabilityLinks: (projectId: string, solutionId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/traceability/links`),
+  createTraceabilityLink: (projectId: string, solutionId: string, data: Record<string, unknown>) =>
+    api.post(`/projects/${projectId}/architectures/${solutionId}/traceability/links`, data),
+  updateTraceabilityLink: (projectId: string, solutionId: string, linkId: string, data: Record<string, unknown>) =>
+    api.put(`/projects/${projectId}/architectures/${solutionId}/traceability/links/${linkId}`, data),
+  deleteTraceabilityLink: (projectId: string, solutionId: string, linkId: string) =>
+    api.delete(`/projects/${projectId}/architectures/${solutionId}/traceability/links/${linkId}`),
+  getComponentRequirements: (projectId: string, solutionId: string, componentId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/components/${componentId}/requirements`),
 };
 
 // ===== 文档 API =====

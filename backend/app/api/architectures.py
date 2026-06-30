@@ -2,7 +2,7 @@
 
 import uuid
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import DBSession, CurrentUser, RequireSA
@@ -13,6 +13,12 @@ from app.models.project import Project
 from app.schemas.schemas import (
     ArchitectureRecommendRequest, ArchSolutionPublic, ArchReviewCreate,
     ADRCreate, MessageResponse,
+    # 新增
+    ArchReviewPublic, ArchReviewUpdate,
+    ADRPublic, ADRUpdate,
+    ArchComponentCreate, ArchComponentUpdate, ArchComponentPublic,
+    TraceabilityLinkCreate, TraceabilityLinkUpdate, TraceabilityLinkPublic,
+    ArchSolutionUpdate,
 )
 from app.llm.provider import get_llm_provider
 from app.llm.prompts.requirement_extractor import (
@@ -24,6 +30,21 @@ from app.llm.prompts.requirement_extractor import (
 import json
 
 router = APIRouter(prefix="/projects/{project_id}/architectures", tags=["架构设计"])
+
+
+async def _get_solution_or_404(
+    db: AsyncSession, project_id: uuid.UUID, solution_id: uuid.UUID
+) -> ArchitectureSolution:
+    result = await db.execute(
+        select(ArchitectureSolution).where(
+            ArchitectureSolution.id == solution_id,
+            ArchitectureSolution.project_id == project_id,
+        )
+    )
+    solution = result.scalar_one_or_none()
+    if not solution:
+        raise HTTPException(status_code=404, detail="架构方案不存在")
+    return solution
 
 
 @router.post("/recommend", response_model=dict)
@@ -479,3 +500,579 @@ async def generate_plantuml(
         "solution_name": solution.name,
         "plantuml": result.content,
     }
+
+
+# =============================================
+# 2.1 Review 管理
+# =============================================
+
+@router.get("/{solution_id}/reviews", response_model=list[ArchReviewPublic])
+async def list_reviews(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取架构评审列表"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchReview).where(
+            ArchReview.solution_id == solution_id,
+        ).order_by(ArchReview.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/{solution_id}/reviews/{review_id}", response_model=ArchReviewPublic)
+async def get_review(
+    project_id: uuid.UUID, solution_id: uuid.UUID, review_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取评审详情"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchReview).where(
+            ArchReview.id == review_id,
+            ArchReview.solution_id == solution_id,
+        )
+    )
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="评审不存在")
+    return review
+
+
+@router.put("/{solution_id}/reviews/{review_id}", response_model=ArchReviewPublic)
+async def update_review(
+    project_id: uuid.UUID, solution_id: uuid.UUID, review_id: uuid.UUID,
+    data: ArchReviewUpdate, current_user: RequireSA, db: DBSession,
+):
+    """更新评审状态"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchReview).where(
+            ArchReview.id == review_id,
+            ArchReview.solution_id == solution_id,
+        )
+    )
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="评审不存在")
+
+    # 状态流转验证: open→addressed→resolved（严格单向）
+    if data.status is not None:
+        valid_transitions = {"open": "addressed", "addressed": "resolved"}
+        expected = valid_transitions.get(review.status)
+        if expected != data.status:
+            raise HTTPException(
+                status_code=400,
+                detail=f"评审状态不允许从 {review.status} 变更为 {data.status}",
+            )
+
+    updates = data.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(review, key, value)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="update_review",
+        target_type="arch_review",
+        target_id=review_id,
+        detail=updates,
+    ))
+    await db.flush()
+    await db.refresh(review)
+    return review
+
+
+@router.delete("/{solution_id}/reviews/{review_id}", response_model=MessageResponse)
+async def delete_review(
+    project_id: uuid.UUID, solution_id: uuid.UUID, review_id: uuid.UUID,
+    current_user: RequireSA, db: DBSession,
+):
+    """删除评审"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchReview).where(
+            ArchReview.id == review_id,
+            ArchReview.solution_id == solution_id,
+        )
+    )
+    review = result.scalar_one_or_none()
+    if not review:
+        raise HTTPException(status_code=404, detail="评审不存在")
+
+    await db.delete(review)
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="delete_review",
+        target_type="arch_review",
+        target_id=review_id,
+        detail={"comment": review.comment},
+    ))
+    return MessageResponse(message="评审已删除")
+
+
+# =============================================
+# 2.2 ADR 管理
+# =============================================
+
+@router.get("/{solution_id}/adrs", response_model=list[ADRPublic])
+async def list_adrs(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取ADR列表"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ADR).where(
+            ADR.solution_id == solution_id,
+            ADR.project_id == project_id,
+        ).order_by(ADR.created_at.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get("/{solution_id}/adrs/{adr_id}", response_model=ADRPublic)
+async def get_adr(
+    project_id: uuid.UUID, solution_id: uuid.UUID, adr_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取ADR详情"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ADR).where(
+            ADR.id == adr_id,
+            ADR.solution_id == solution_id,
+            ADR.project_id == project_id,
+        )
+    )
+    adr = result.scalar_one_or_none()
+    if not adr:
+        raise HTTPException(status_code=404, detail="ADR不存在")
+    return adr
+
+
+@router.put("/{solution_id}/adrs/{adr_id}", response_model=ADRPublic)
+async def update_adr(
+    project_id: uuid.UUID, solution_id: uuid.UUID, adr_id: uuid.UUID,
+    data: ADRUpdate, current_user: RequireSA, db: DBSession,
+):
+    """更新ADR"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ADR).where(
+            ADR.id == adr_id,
+            ADR.solution_id == solution_id,
+            ADR.project_id == project_id,
+        )
+    )
+    adr = result.scalar_one_or_none()
+    if not adr:
+        raise HTTPException(status_code=404, detail="ADR不存在")
+
+    updates = data.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(adr, key, value)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="update_adr",
+        target_type="adr",
+        target_id=adr_id,
+        detail=updates,
+    ))
+    await db.flush()
+    await db.refresh(adr)
+    return adr
+
+
+@router.delete("/{solution_id}/adrs/{adr_id}", response_model=MessageResponse)
+async def delete_adr(
+    project_id: uuid.UUID, solution_id: uuid.UUID, adr_id: uuid.UUID,
+    current_user: RequireSA, db: DBSession,
+):
+    """删除ADR"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ADR).where(
+            ADR.id == adr_id,
+            ADR.solution_id == solution_id,
+            ADR.project_id == project_id,
+        )
+    )
+    adr = result.scalar_one_or_none()
+    if not adr:
+        raise HTTPException(status_code=404, detail="ADR不存在")
+
+    await db.delete(adr)
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="delete_adr",
+        target_type="adr",
+        target_id=adr_id,
+        detail={"title": adr.title},
+    ))
+    return MessageResponse(message="ADR已删除")
+
+
+# =============================================
+# 2.3 Component 管理
+# =============================================
+
+@router.get("/{solution_id}/components", response_model=list[ArchComponentPublic])
+async def list_components(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取架构组件列表"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    return result.scalars().all()
+
+
+@router.post("/{solution_id}/components", response_model=ArchComponentPublic, status_code=status.HTTP_201_CREATED)
+async def create_component(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    data: ArchComponentCreate, current_user: RequireSA, db: DBSession,
+):
+    """创建架构组件"""
+    await _get_solution_or_404(db, project_id, solution_id)
+
+    component = ArchComponent(
+        solution_id=solution_id,
+        name=data.name,
+        comp_type=data.comp_type,
+        responsibility=data.responsibility,
+        interfaces=data.interfaces,
+        dependencies=data.dependencies,
+    )
+    db.add(component)
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="create_component",
+        target_type="arch_component",
+        target_id=solution_id,
+        detail={"name": data.name},
+    ))
+    await db.flush()
+    await db.refresh(component)
+    return component
+
+
+@router.get("/{solution_id}/components/{component_id}", response_model=ArchComponentPublic)
+async def get_component(
+    project_id: uuid.UUID, solution_id: uuid.UUID, component_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取组件详情"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.id == component_id,
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    component = result.scalar_one_or_none()
+    if not component:
+        raise HTTPException(status_code=404, detail="组件不存在")
+    return component
+
+
+@router.put("/{solution_id}/components/{component_id}", response_model=ArchComponentPublic)
+async def update_component(
+    project_id: uuid.UUID, solution_id: uuid.UUID, component_id: uuid.UUID,
+    data: ArchComponentUpdate, current_user: RequireSA, db: DBSession,
+):
+    """编辑架构组件"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.id == component_id,
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    component = result.scalar_one_or_none()
+    if not component:
+        raise HTTPException(status_code=404, detail="组件不存在")
+
+    updates = data.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(component, key, value)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="update_component",
+        target_type="arch_component",
+        target_id=component_id,
+        detail=updates,
+    ))
+    await db.flush()
+    await db.refresh(component)
+    return component
+
+
+@router.delete("/{solution_id}/components/{component_id}", response_model=MessageResponse)
+async def delete_component(
+    project_id: uuid.UUID, solution_id: uuid.UUID, component_id: uuid.UUID,
+    current_user: RequireSA, db: DBSession,
+):
+    """删除架构组件（级联删除关联的TraceabilityLink）"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.id == component_id,
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    component = result.scalar_one_or_none()
+    if not component:
+        raise HTTPException(status_code=404, detail="组件不存在")
+
+    # 级联删除关联的 TraceabilityLink
+    await db.execute(
+        delete(TraceabilityLink).where(TraceabilityLink.component_id == component_id)
+    )
+    await db.delete(component)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="delete_component",
+        target_type="arch_component",
+        target_id=component_id,
+        detail={"name": component.name},
+    ))
+    return MessageResponse(message="组件已删除")
+
+
+# =============================================
+# 2.4 TraceabilityLink 管理
+# =============================================
+
+@router.get("/{solution_id}/traceability/links", response_model=list[TraceabilityLinkPublic])
+async def list_traceability_links(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取追溯链接列表"""
+    await _get_solution_or_404(db, project_id, solution_id)
+
+    result = await db.execute(
+        select(TraceabilityLink).where(
+            TraceabilityLink.solution_id == solution_id,
+        )
+    )
+    return result.scalars().all()
+
+
+@router.post("/{solution_id}/traceability/links", response_model=TraceabilityLinkPublic, status_code=status.HTTP_201_CREATED)
+async def create_traceability_link(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    data: TraceabilityLinkCreate, current_user: RequireSA, db: DBSession,
+):
+    """创建追溯链接"""
+    await _get_solution_or_404(db, project_id, solution_id)
+
+    # 验证 requirement 存在且属于当前项目
+    req_result = await db.execute(
+        select(Requirement).where(
+            Requirement.id == data.requirement_id,
+            Requirement.project_id == project_id,
+        )
+    )
+    if not req_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="需求不存在或不属于当前项目")
+
+    # 验证 component 存在且属于当前方案
+    comp_result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.id == data.component_id,
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    if not comp_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="组件不存在或不属于当前方案")
+
+    # 检查重复链接
+    dup_result = await db.execute(
+        select(TraceabilityLink).where(
+            TraceabilityLink.requirement_id == data.requirement_id,
+            TraceabilityLink.component_id == data.component_id,
+            TraceabilityLink.solution_id == solution_id,
+        )
+    )
+    if dup_result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="追溯链接已存在")
+
+    link = TraceabilityLink(
+        requirement_id=data.requirement_id,
+        component_id=data.component_id,
+        solution_id=solution_id,
+        mapping_type=data.mapping_type,
+        confidence=data.confidence,
+        rationale=data.rationale,
+    )
+    db.add(link)
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="create_traceability_link",
+        target_type="traceability_link",
+        target_id=solution_id,
+        detail={"requirement_id": str(data.requirement_id), "component_id": str(data.component_id)},
+    ))
+    await db.flush()
+    await db.refresh(link)
+    return link
+
+
+@router.put("/{solution_id}/traceability/links/{link_id}", response_model=TraceabilityLinkPublic)
+async def update_traceability_link(
+    project_id: uuid.UUID, solution_id: uuid.UUID, link_id: uuid.UUID,
+    data: TraceabilityLinkUpdate, current_user: RequireSA, db: DBSession,
+):
+    """编辑追溯链接"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(TraceabilityLink).where(
+            TraceabilityLink.id == link_id,
+            TraceabilityLink.solution_id == solution_id,
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="追溯链接不存在")
+
+    updates = data.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(link, key, value)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="update_traceability_link",
+        target_type="traceability_link",
+        target_id=link_id,
+        detail=updates,
+    ))
+    await db.flush()
+    await db.refresh(link)
+    return link
+
+
+@router.delete("/{solution_id}/traceability/links/{link_id}", response_model=MessageResponse)
+async def delete_traceability_link(
+    project_id: uuid.UUID, solution_id: uuid.UUID, link_id: uuid.UUID,
+    current_user: RequireSA, db: DBSession,
+):
+    """删除追溯链接"""
+    await _get_solution_or_404(db, project_id, solution_id)
+    result = await db.execute(
+        select(TraceabilityLink).where(
+            TraceabilityLink.id == link_id,
+            TraceabilityLink.solution_id == solution_id,
+        )
+    )
+    link = result.scalar_one_or_none()
+    if not link:
+        raise HTTPException(status_code=404, detail="追溯链接不存在")
+
+    await db.delete(link)
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="delete_traceability_link",
+        target_type="traceability_link",
+        target_id=link_id,
+        detail={"requirement_id": str(link.requirement_id), "component_id": str(link.component_id)},
+    ))
+    return MessageResponse(message="追溯链接已删除")
+
+
+@router.get("/{solution_id}/components/{component_id}/requirements", response_model=list[dict])
+async def get_component_requirements(
+    project_id: uuid.UUID, solution_id: uuid.UUID, component_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """双向追溯：查询组件关联的所有需求"""
+    await _get_solution_or_404(db, project_id, solution_id)
+
+    # 验证组件存在
+    comp_result = await db.execute(
+        select(ArchComponent).where(
+            ArchComponent.id == component_id,
+            ArchComponent.solution_id == solution_id,
+        )
+    )
+    if not comp_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="组件不存在")
+
+    # 查询该组件关联的所有追溯链接
+    link_result = await db.execute(
+        select(TraceabilityLink).where(
+            TraceabilityLink.component_id == component_id,
+            TraceabilityLink.solution_id == solution_id,
+        )
+    )
+    links = link_result.scalars().all()
+    if not links:
+        return []
+
+    # 查询关联的需求
+    req_ids = [l.requirement_id for l in links]
+    req_result = await db.execute(
+        select(Requirement).where(Requirement.id.in_(req_ids))
+    )
+    requirements = {r.id: r for r in req_result.scalars().all()}
+
+    result_list = []
+    for l in links:
+        req = requirements.get(l.requirement_id)
+        if req:
+            result_list.append({
+                "requirement_id": str(req.id),
+                "requirement_title": req.title,
+                "requirement_type": req.req_type,
+                "mapping_type": l.mapping_type,
+                "confidence": l.confidence,
+                "rationale": l.rationale,
+            })
+    return result_list
+
+
+# =============================================
+# 2.5 Solution 编辑
+# =============================================
+
+@router.put("/{solution_id}", response_model=ArchSolutionPublic)
+async def update_solution(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    data: ArchSolutionUpdate, current_user: RequireSA, db: DBSession,
+):
+    """编辑架构方案"""
+    solution = await _get_solution_or_404(db, project_id, solution_id)
+
+    updates = data.model_dump(exclude_unset=True)
+
+    # 编辑 recommendation 时自动递增 version
+    if "recommendation" in updates:
+        solution.version = (solution.version or 0) + 1
+
+    # 状态合法性验证
+    if "status" in updates:
+        valid_statuses = {"proposed", "selected", "reviewed", "confirmed"}
+        if updates["status"] not in valid_statuses:
+            raise HTTPException(status_code=400, detail="无效的方案状态")
+
+    for key, value in updates.items():
+        setattr(solution, key, value)
+
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="update_solution",
+        target_type="architecture",
+        target_id=solution_id,
+        detail=updates,
+    ))
+    await db.flush()
+    await db.refresh(solution)
+    return solution

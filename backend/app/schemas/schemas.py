@@ -226,3 +226,105 @@ class UseCasePublic(BaseModel):
     created_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+# ===== 架构评审管理 =====
+class ArchReviewPublic(BaseModel):
+    id: uuid.UUID
+    solution_id: uuid.UUID
+    reviewer_id: uuid.UUID
+    comment: str
+    rating: int | None = None
+    status: str
+    created_at: datetime | None = None
+    model_config = {"from_attributes": True}
+
+
+class ArchReviewUpdate(BaseModel):
+    status: str | None = Field(None, pattern="^(open|addressed|resolved)$")
+    response_comment: str | None = None
+
+
+# ===== ADR管理 =====
+class ADRPublic(BaseModel):
+    id: uuid.UUID
+    solution_id: uuid.UUID
+    project_id: uuid.UUID
+    title: str
+    context: str
+    decision: str
+    status: str
+    consequences: str | None = None
+    created_at: datetime | None = None
+    model_config = {"from_attributes": True}
+
+
+class ADRUpdate(BaseModel):
+    title: str | None = None
+    context: str | None = None
+    decision: str | None = None
+    consequences: str | None = None
+    status: str | None = Field(None, pattern="^(proposed|accepted|deprecated|superseded)$")
+
+
+# ===== 架构组件管理 =====
+class ArchComponentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    comp_type: str | None = None
+    responsibility: str | None = None
+    interfaces: dict | list | None = None
+    dependencies: dict | list | None = None
+
+
+class ArchComponentUpdate(BaseModel):
+    name: str | None = None
+    comp_type: str | None = None
+    responsibility: str | None = None
+    interfaces: dict | list | None = None
+    dependencies: dict | list | None = None
+
+
+class ArchComponentPublic(BaseModel):
+    id: uuid.UUID
+    solution_id: uuid.UUID
+    name: str
+    comp_type: str | None = None
+    responsibility: str | None = None
+    interfaces: dict | list | None = None
+    dependencies: dict | list | None = None
+    model_config = {"from_attributes": True}
+
+
+# ===== 追溯链接管理 =====
+class TraceabilityLinkCreate(BaseModel):
+    requirement_id: uuid.UUID
+    component_id: uuid.UUID
+    mapping_type: str | None = "direct"
+    confidence: float | None = Field(default=0.8, ge=0.0, le=1.0)
+    rationale: str | None = None
+
+
+class TraceabilityLinkUpdate(BaseModel):
+    mapping_type: str | None = None
+    confidence: float | None = Field(None, ge=0.0, le=1.0)
+    rationale: str | None = None
+
+
+class TraceabilityLinkPublic(BaseModel):
+    id: uuid.UUID
+    requirement_id: uuid.UUID
+    component_id: uuid.UUID
+    solution_id: uuid.UUID
+    mapping_type: str | None = None
+    confidence: float | None = None
+    rationale: str | None = None
+    model_config = {"from_attributes": True}
+
+
+# ===== 架构方案编辑 =====
+class ArchSolutionUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    status: str | None = Field(None, pattern="^(proposed|selected|reviewed|confirmed)$")
+    recommendation: dict | None = None
+    quality_scores: dict | None = None
