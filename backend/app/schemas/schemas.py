@@ -80,6 +80,10 @@ class ProjectMemberAdd(BaseModel):
     role: str = "RE"
 
 
+class ProjectMemberUpdate(BaseModel):
+    role: str = Field(min_length=1, max_length=20)
+
+
 # ===== 需求相关 =====
 class RequirementCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)

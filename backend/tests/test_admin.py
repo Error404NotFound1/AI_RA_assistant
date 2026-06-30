@@ -51,11 +51,16 @@ async def test_get_logs(admin_auth_client):
     response = await admin_auth_client.get("/api/v1/admin/logs")
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
+    assert isinstance(data, dict)
+    assert "items" in data
+    assert isinstance(data["items"], list)
+    assert "total" in data
+    assert "page" in data
+    assert "page_size" in data
 
     # 验证日志条目结构（如果有数据）
-    if len(data) > 0:
-        log = data[0]
+    if len(data["items"]) > 0:
+        log = data["items"][0]
         assert "id" in log
         assert "action" in log
         assert "created_at" in log

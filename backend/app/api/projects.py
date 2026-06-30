@@ -6,11 +6,12 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import DBSession, CurrentUser, RequireRE
-from app.models.user import UserRole
+
 from app.models.project import Project, ProjectMember, ProjectStatus
 from app.models.requirement import Requirement
+from app.models.user import UserRole, User
 from app.schemas.schemas import (
-    ProjectCreate, ProjectUpdate, ProjectPublic, ProjectMemberAdd, MessageResponse,
+    ProjectCreate, ProjectUpdate, ProjectPublic, ProjectMemberAdd, ProjectMemberUpdate, MessageResponse,
 )
 
 router = APIRouter(prefix="/projects", tags=["项目"])
@@ -105,3 +106,107 @@ async def add_member(project_id: uuid.UUID, data: ProjectMemberAdd, current_user
     member = ProjectMember(project_id=project_id, user_id=data.user_id, role=data.role)
     db.add(member)
     return MessageResponse(message="成员已添加")
+
+
+@router.get("/{project_id}/members")
+async def get_project_members(project_id: uuid.UUID, current_user: CurrentUser, db: DBSession):
+    """获取项目成员列表"""
+    # 验证项目存在
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 验证当前用户是项目成员
+    membership = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == current_user.id,
+        )
+    )
+    if not membership.scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="您不是该项目成员")
+
+    # 查询成员列表 JOIN users 表
+    result = await db.execute(
+        select(ProjectMember, User)
+        .join(User, ProjectMember.user_id == User.id)
+        .where(ProjectMember.project_id == project_id)
+        .order_by(ProjectMember.joined_at)
+    )
+    rows = result.all()
+    members = []
+    for member, user in rows:
+        members.append({
+            "user_id": str(user.id),
+            "username": user.username,
+            "full_name": user.full_name,
+            "email": user.email,
+            "role": member.role,
+            "joined_at": member.joined_at.isoformat() if member.joined_at else None,
+            "is_owner": user.id == project.owner_id,
+        })
+    return members
+
+
+@router.delete("/{project_id}/members/{user_id}", response_model=MessageResponse)
+async def remove_project_member(project_id: uuid.UUID, user_id: uuid.UUID, current_user: CurrentUser, db: DBSession):
+    """移除项目成员（仅项目创建者可操作）"""
+    # 验证项目存在
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 验证当前用户是项目创建者
+    if project.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="只有项目创建者可以移除成员")
+
+    # 不能移除自己（创建者）
+    if user_id == project.owner_id:
+        raise HTTPException(status_code=400, detail="不能移除项目创建者")
+
+    # 查找并删除成员记录
+    result = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=404, detail="该用户不是项目成员")
+
+    await db.delete(member)
+    return MessageResponse(message="成员已移除")
+
+
+@router.put("/{project_id}/members/{user_id}", response_model=MessageResponse)
+async def update_member_role(project_id: uuid.UUID, user_id: uuid.UUID, data: ProjectMemberUpdate, current_user: CurrentUser, db: DBSession):
+    """修改项目成员角色（仅项目创建者可操作）"""
+    # 验证项目存在
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 验证当前用户是项目创建者
+    if project.owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="只有项目创建者可以修改成员角色")
+
+    # 查找成员记录
+    result = await db.execute(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if not member:
+        raise HTTPException(status_code=404, detail="该用户不是项目成员")
+
+    # 更新角色
+    member.role = data.role
+    await db.flush()
+    await db.refresh(member)
+    return MessageResponse(message="成员角色已更新")

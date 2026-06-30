@@ -54,6 +54,12 @@ export const projectAPI = {
   delete: (id: string) => api.delete(`/projects/${id}`),
   addMember: (projectId: string, data: { user_id: string; role: string }) =>
     api.post(`/projects/${projectId}/members`, data),
+  getMembers: (projectId: string) =>
+    api.get(`/projects/${projectId}/members`),
+  removeMember: (projectId: string, userId: string) =>
+    api.delete(`/projects/${projectId}/members/${userId}`),
+  updateMemberRole: (projectId: string, userId: string, role: string) =>
+    api.put(`/projects/${projectId}/members/${userId}`, { role }),
 };
 
 // ===== 需求 API =====
@@ -217,6 +223,28 @@ export const aiReviewAPI = {
   // 需求统计
   getRequirementStats: (projectId: string, requirementId: string) =>
     api.get(`/projects/${projectId}/requirements/${requirementId}/stats`),
+};
+
+// ===== AI 助手对话 API =====
+export const chatAPI = {
+  // 非流式对话
+  async send(data: { message: string; history: { role: string; content: string }[]; project_context?: string }) {
+    const res = await api.post("/chat/simple", data);
+    return res.data;
+  },
+  // 流式对话（返回 fetch stream）
+  async sendStream(data: { message: string; history: { role: string; content: string }[]; project_context?: string }) {
+    const token = localStorage.getItem("access_token");
+    const res = await fetch(`${API_BASE_URL}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+    return res;
+  },
 };
 
 export default api;

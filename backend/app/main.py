@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api import auth, projects, requirements, architectures, documents, admin, uploads
+from app.api import auth, projects, requirements, architectures, documents, admin, uploads, chat
 from app.middleware.audit_middleware import AuditMiddleware
 
 app = FastAPI(
@@ -35,6 +35,7 @@ app.include_router(architectures.router, prefix=settings.API_V1_STR)
 app.include_router(documents.router, prefix=settings.API_V1_STR)
 app.include_router(admin.router, prefix=settings.API_V1_STR)
 app.include_router(uploads.router, prefix=settings.API_V1_STR)
+app.include_router(chat.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/", tags=["健康检查"])

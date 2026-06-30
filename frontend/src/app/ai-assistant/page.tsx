@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { chatAPI } from "@/lib/api";
 
 interface Message {
   id: string;
@@ -53,18 +54,21 @@ export default function AIAssistantPage() {
     setInput("");
     setIsLoading(true);
 
-    // 模拟 AI 响应（实际项目中连接后端 SSE 流式接口）
+    // 调用后端 AI 对话 API
     try {
-      // TODO: 接入后端 AI 对话 API
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-
+      const history = messages.map((m) => ({ role: m.role, content: m.content }));
+      const result = await chatAPI.send({
+        message: content,
+        history,
+      });
+    
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: `我是 AI-SE 助手，可以帮助您进行软件工程相关的需求分析和架构设计。\n\n您提到："${content}"\n\n这是一个很好的问题。在实际项目中，我会基于 INCOSE 标准对需求进行质量评估，并使用 ADD 方法推荐合适的架构方案。请确保已在需求分析和架构设计模块中录入项目数据，我才能提供更精准的分析结果。`,
+        content: result.content || "抱歉，AI 服务暂时不可用，请稍后重试。",
         timestamp: new Date(),
       };
-
+    
       setMessages((prev) => [...prev, assistantMessage]);
     } catch {
       const errorMessage: Message = {

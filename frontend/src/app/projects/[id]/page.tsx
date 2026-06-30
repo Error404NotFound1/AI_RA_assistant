@@ -11,13 +11,39 @@ import {
   BrainCircuit,
   ArrowLeft,
   Settings,
+  Users,
+  Trash2,
 } from "lucide-react";
 import { AppHeader } from "@/components/layout/app-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useProjectStore, useRequirementStore, useArchitectureStore } from "@/lib/project-store";
+import { projectAPI } from "@/lib/api";
 
 export default function ProjectDetailPage() {
   const params = useParams();
@@ -28,6 +54,12 @@ export default function ProjectDetailPage() {
   const { requirements, fetchRequirements } = useRequirementStore();
   const { solutions, fetchSolutions } = useArchitectureStore();
   const [isLoading, setIsLoading] = useState(true);
+
+  // 成员管理状态
+  const [isMembersOpen, setIsMembersOpen] = useState(false);
+  const [members, setMembers] = useState<any[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -41,6 +73,49 @@ export default function ProjectDetailPage() {
     }
     if (projectId) load();
   }, [projectId, fetchProject, fetchRequirements, fetchSolutions]);
+
+  // 加载成员列表
+  const loadMembers = async () => {
+    setMembersLoading(true);
+    try {
+      const res = await projectAPI.getMembers(projectId);
+      setMembers(res.data);
+    } catch {
+      // 静默处理
+    } finally {
+      setMembersLoading(false);
+    }
+  };
+
+  // 打开成员管理 Dialog
+  const handleOpenMembers = () => {
+    setIsMembersOpen(true);
+    loadMembers();
+  };
+
+  // 移除成员
+  const handleRemoveMember = async (userId: string, username: string) => {
+    if (!confirm(`确定移除成员「${username}」？`)) return;
+    setRemovingId(userId);
+    try {
+      await projectAPI.removeMember(projectId, userId);
+      await loadMembers();
+    } catch {
+      // 静默处理
+    } finally {
+      setRemovingId(null);
+    }
+  };
+
+  // 修改成员角色
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    try {
+      await projectAPI.updateMemberRole(projectId, userId, newRole);
+      await loadMembers();
+    } catch {
+      // 静默处理
+    }
+  };
 
   if (isLoading) {
     return (
@@ -295,8 +370,98 @@ export default function ProjectDetailPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* 成员管理 */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>项目成员</CardTitle>
+                <Button size="sm" onClick={handleOpenMembers}>
+                  <Users className="mr-2 h-4 w-4" />
+                  管理成员
+                </Button>
+              </CardHeader>
+            </Card>
           </TabsContent>
         </Tabs>
+
+        {/* 成员管理 Dialog */}
+        <Dialog open={isMembersOpen} onOpenChange={setIsMembersOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>项目成员管理</DialogTitle>
+              <DialogDescription>
+                查看和管理项目成员，修改角色或移除成员
+              </DialogDescription>
+            </DialogHeader>
+            {membersLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>用户名</TableHead>
+                    <TableHead>姓名</TableHead>
+                    <TableHead>角色</TableHead>
+                    <TableHead className="text-right">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {members.map((member) => (
+                    <TableRow key={member.user_id}>
+                      <TableCell className="font-medium">
+                        {member.username}
+                        {member.is_owner && (
+                          <Badge variant="outline" className="ml-2 text-xs">
+                            所有者
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell>{member.full_name || "-"}</TableCell>
+                      <TableCell>
+                        {member.is_owner ? (
+                          <span className="text-sm text-muted-foreground">{member.role}</span>
+                        ) : (
+                          <Select
+                            value={member.role}
+                            onValueChange={(val) => handleRoleChange(member.user_id, val)}
+                          >
+                            <SelectTrigger className="w-24 h-8">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="RE">RE</SelectItem>
+                              <SelectItem value="SA">SA</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {!member.is_owner && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => handleRemoveMember(member.user_id, member.username)}
+                            disabled={removingId === member.user_id}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsMembersOpen(false)}>
+                关闭
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );
