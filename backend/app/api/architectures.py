@@ -19,6 +19,7 @@ from app.schemas.schemas import (
     ArchComponentCreate, ArchComponentUpdate, ArchComponentPublic,
     TraceabilityLinkCreate, TraceabilityLinkUpdate, TraceabilityLinkPublic,
     ArchSolutionUpdate,
+    AIReviewResponse,
 )
 from app.llm.provider import get_llm_provider
 from app.llm.prompts.requirement_extractor import (
@@ -26,8 +27,10 @@ from app.llm.prompts.requirement_extractor import (
     TRACEABILITY_MAPPER_SYSTEM_PROMPT, TRACEABILITY_MAPPER_USER_TEMPLATE,
     ARCH_DOC_GENERATOR_SYSTEM_PROMPT, ARCH_DOC_GENERATOR_USER_TEMPLATE,
     PLANTUML_GENERATOR_SYSTEM_PROMPT, PLANTUML_GENERATOR_USER_TEMPLATE,
+    ARCH_REVIEW_SYSTEM_PROMPT, ARCH_REVIEW_USER_TEMPLATE,
 )
 import json
+from sqlalchemy import func
 
 router = APIRouter(prefix="/projects/{project_id}/architectures", tags=["架构设计"])
 
@@ -1076,3 +1079,133 @@ async def update_solution(
     await db.flush()
     await db.refresh(solution)
     return solution
+
+
+# =============================================
+# 2.6 AI 架构评审
+# =============================================
+
+@router.post("/{solution_id}/ai-review", response_model=AIReviewResponse)
+async def ai_review_architecture(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: RequireSA, db: DBSession,
+):
+    """使用 AI 进行架构评审"""
+    solution = await _get_solution_or_404(db, project_id, solution_id)
+
+    # 获取组件列表
+    comp_result = await db.execute(
+        select(ArchComponent).where(ArchComponent.solution_id == solution_id)
+    )
+    components = comp_result.scalars().all()
+
+    comp_text = "\n".join([
+        f"- {c.name} ({c.comp_type}): {c.responsibility or '无描述'}"
+        for c in components
+    ]) if components else "无组件"
+
+    # 调用 LLM
+    provider = get_llm_provider()
+    prompt = ARCH_REVIEW_USER_TEMPLATE.format(
+        solution_name=solution.name,
+        solution_description=solution.description or "无",
+        solution_status=solution.status,
+        recommendation=json.dumps(solution.recommendation or {}, ensure_ascii=False),
+        components=comp_text,
+    )
+
+    try:
+        result = await provider.complete(ARCH_REVIEW_SYSTEM_PROMPT, prompt)
+        if not result.parsed_json:
+            raise ValueError("AI 评审结果解析失败")
+        ai_result = result.parsed_json
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI 架构评审失败: {str(e)}")
+
+    # 创建 ArchReview 记录
+    summary = ai_result.get("summary", "无评审意见")
+    overall_rating = ai_result.get("overall_rating", 5)
+    # rating 字段为 1-5，将 10 分制转为 5 分制
+    rating_5 = max(1, min(5, round(overall_rating / 2))) if overall_rating else 3
+
+    review = ArchReview(
+        solution_id=solution_id,
+        reviewer_id=current_user.id,
+        comment=f"[AI评审] {summary}",
+        rating=rating_5,
+        status="open",
+    )
+    db.add(review)
+    await db.flush()
+    await db.refresh(review)
+
+    # 记录操作日志
+    db.add(OperationLog(
+        user_id=current_user.id,
+        action="ai_review",
+        target_type="architecture",
+        target_id=solution_id,
+        detail={"overall_rating": overall_rating, "defects_count": len(ai_result.get("defects", []))},
+    ))
+
+    return AIReviewResponse(
+        review_id=review.id,
+        solution_id=review.solution_id,
+        reviewer_id=review.reviewer_id,
+        comment=review.comment,
+        rating=review.rating,
+        status=review.status,
+        created_at=review.created_at,
+        quality_assessment=ai_result.get("quality_assessment"),
+        pattern_fitness=ai_result.get("pattern_fitness"),
+        component_analysis=ai_result.get("component_analysis"),
+        defects=ai_result.get("defects"),
+        suggestions=ai_result.get("suggestions"),
+        overall_rating=overall_rating,
+        summary=summary,
+    )
+
+
+# =============================================
+# 2.7 统计计数
+# =============================================
+
+@router.get("/{solution_id}/stats", response_model=dict)
+async def get_architecture_stats(
+    project_id: uuid.UUID, solution_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取架构方案统计计数"""
+    await _get_solution_or_404(db, project_id, solution_id)
+
+    # recommend_count: action="recommend" 且 target_id=solution_id
+    recommend_result = await db.execute(
+        select(func.count()).select_from(OperationLog).where(
+            OperationLog.action == "recommend",
+            OperationLog.target_id == solution_id,
+        )
+    )
+    recommend_count = recommend_result.scalar() or 0
+
+    # view_count: action="view_architecture" 且 target_id=solution_id
+    view_result = await db.execute(
+        select(func.count()).select_from(OperationLog).where(
+            OperationLog.action == "view_architecture",
+            OperationLog.target_id == solution_id,
+        )
+    )
+    view_count = view_result.scalar() or 0
+
+    # review_count: 该solution的review总数
+    review_result = await db.execute(
+        select(func.count()).select_from(ArchReview).where(
+            ArchReview.solution_id == solution_id,
+        )
+    )
+    review_count = review_result.scalar() or 0
+
+    return {
+        "recommend_count": recommend_count,
+        "view_count": view_count,
+        "review_count": review_count,
+    }

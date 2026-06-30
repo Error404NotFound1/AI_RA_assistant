@@ -57,7 +57,109 @@ import {
   useAttachmentStore,
   type Requirement,
 } from "@/lib/project-store";
-import { attachmentAPI, requirementAPI } from "@/lib/api";
+import { attachmentAPI, requirementAPI, aiReviewAPI } from "@/lib/api";
+
+// AI 建议结果数据结构
+interface AISuggestion {
+  suggested_type: string;
+  type_confidence: number;
+  improved_description: string;
+  completeness_suggestions: string[];
+  related_requirements: string[];
+  quality_tips: string[];
+}
+
+// AI 建议类型中文映射
+const typeLabels: Record<string, string> = {
+  functional: "功能需求",
+  non_functional: "非功能需求",
+  constraint: "约束",
+  business_rule: "业务规则",
+};
+
+// AI 建议面板组件
+function AISuggestionPanel({
+  suggestion,
+  onAdoptDescription,
+}: {
+  suggestion: AISuggestion;
+  onAdoptDescription: (desc: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-4 w-4 text-blue-600" />
+        <span className="text-sm font-semibold text-blue-700">AI 建议</span>
+      </div>
+
+      {/* 推荐类型 + 置信度 */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+          {typeLabels[suggestion.suggested_type] || suggestion.suggested_type}
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          置信度：{Math.round(suggestion.type_confidence * 100)}%
+        </span>
+      </div>
+
+      {/* 完善后的描述 */}
+      {suggestion.improved_description && (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">完善后的描述</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-6 text-xs"
+              onClick={() => onAdoptDescription(suggestion.improved_description)}
+            >
+              采纳
+            </Button>
+          </div>
+          <p className="text-sm bg-white rounded p-2 border">
+            {suggestion.improved_description}
+          </p>
+        </div>
+      )}
+
+      {/* 补全建议 */}
+      {suggestion.completeness_suggestions && suggestion.completeness_suggestions.length > 0 && (
+        <div className="space-y-1">
+          <span className="text-xs font-medium text-muted-foreground">补全建议</span>
+          <ul className="text-xs space-y-0.5 list-disc list-inside">
+            {suggestion.completeness_suggestions.map((s, i) => (
+              <li key={i}>{s}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 相关需求 */}
+      {suggestion.related_requirements && suggestion.related_requirements.length > 0 && (
+        <div className="space-y-1">
+          <span className="text-xs font-medium text-muted-foreground">可能相关的需求</span>
+          <ul className="text-xs space-y-0.5 list-disc list-inside">
+            {suggestion.related_requirements.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 质量提升建议 */}
+      {suggestion.quality_tips && suggestion.quality_tips.length > 0 && (
+        <div className="space-y-1">
+          <span className="text-xs font-medium text-muted-foreground">质量提升建议</span>
+          <ul className="text-xs space-y-0.5 list-disc list-inside">
+            {suggestion.quality_tips.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // 图表类型中文标签
 const diagramTypeLabels: Record<string, string> = {
@@ -260,6 +362,16 @@ function AnalysisResultCard({
   projectId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [reqStats, setReqStats] = useState<{ analyze_count: number; view_count: number } | null>(null);
+
+  useEffect(() => {
+    if (projectId && requirement.id) {
+      aiReviewAPI.getRequirementStats(projectId, requirement.id)
+        .then((res) => setReqStats(res.data))
+        .catch(() => { /* 静默处理 */ });
+    }
+  }, [projectId, requirement.id]);
+
   const analysis = requirement.analysis_result as {
     intent_analysis?: { business_goal: string; domain: string; stakeholders: string[]; assumptions: string[] };
     functional_requirements?: Array<{ id: string; title: string; description: string; type: string; source: string; rationale: string; sub_requirements?: string[]; inputs?: string[]; outputs?: string[]; business_rules?: string[]; data_entities?: string[] }>;
@@ -290,7 +402,7 @@ function AnalysisResultCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <CardTitle className="text-base">{requirement.title}</CardTitle>
               {getStatusBadge(requirement.status)}
               {requirement.is_ai_extracted && (
@@ -302,6 +414,12 @@ function AnalysisResultCard({
                 <Badge variant="outline" className="text-xs">
                   {requirement.priority}
                 </Badge>
+              )}
+              {reqStats && (
+                <>
+                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-300">🔍 {reqStats.analyze_count} 次分析</Badge>
+                  <Badge variant="outline" className="text-xs bg-gray-50 text-gray-600 border-gray-300">👁 {reqStats.view_count} 次查看</Badge>
+                </>
               )}
             </div>
             <CardDescription className="line-clamp-2">
@@ -643,6 +761,9 @@ export default function RequirementsPage() {
     source: "",
   });
   const [isCreating, setIsCreating] = useState(false);
+  const [createSuggestion, setCreateSuggestion] = useState<AISuggestion | null>(null);
+  const [isCreateSuggesting, setIsCreateSuggesting] = useState(false);
+  const [createSuggestError, setCreateSuggestError] = useState("");
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importContent, setImportContent] = useState("");
   const [isImporting, setIsImporting] = useState(false);
@@ -652,6 +773,9 @@ export default function RequirementsPage() {
   const [editingReq, setEditingReq] = useState<Requirement | null>(null);
   const [editForm, setEditForm] = useState({ title: "", description: "" });
   const [isSaving, setIsSaving] = useState(false);
+  const [editSuggestion, setEditSuggestion] = useState<AISuggestion | null>(null);
+  const [isEditSuggesting, setIsEditSuggesting] = useState(false);
+  const [editSuggestError, setEditSuggestError] = useState("");
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [deletingReq, setDeletingReq] = useState<Requirement | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -713,10 +837,50 @@ export default function RequirementsPage() {
       await createRequirement(selectedProjectId, newReq);
       setIsCreateOpen(false);
       setNewReq({ title: "", description: "", source: "" });
+      setCreateSuggestion(null);
+      setCreateSuggestError("");
     } catch {
       // 静默处理
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const handleCreateSuggest = async () => {
+    if (!selectedProjectId || (!newReq.title.trim() && !newReq.description.trim())) return;
+    setIsCreateSuggesting(true);
+    setCreateSuggestError("");
+    setCreateSuggestion(null);
+    try {
+      const res = await requirementAPI.suggestRequirement(selectedProjectId, {
+        title: newReq.title,
+        description: newReq.description,
+      });
+      setCreateSuggestion(res.data as AISuggestion);
+    } catch (err: unknown) {
+      const axiosError = err as { response?: { data?: { detail?: string } } };
+      setCreateSuggestError(axiosError.response?.data?.detail || "AI 建议获取失败");
+    } finally {
+      setIsCreateSuggesting(false);
+    }
+  };
+
+  const handleEditSuggest = async () => {
+    if (!selectedProjectId || (!editForm.title.trim() && !editForm.description.trim())) return;
+    setIsEditSuggesting(true);
+    setEditSuggestError("");
+    setEditSuggestion(null);
+    try {
+      const res = await requirementAPI.suggestRequirement(selectedProjectId, {
+        title: editForm.title,
+        description: editForm.description,
+      });
+      setEditSuggestion(res.data as AISuggestion);
+    } catch (err: unknown) {
+      const axiosError = err as { response?: { data?: { detail?: string } } };
+      setEditSuggestError(axiosError.response?.data?.detail || "AI 建议获取失败");
+    } finally {
+      setIsEditSuggesting(false);
     }
   };
 
@@ -733,6 +897,8 @@ export default function RequirementsPage() {
   const handleOpenEdit = (req: Requirement) => {
     setEditingReq(req);
     setEditForm({ title: req.title, description: req.description });
+    setEditSuggestion(null);
+    setEditSuggestError("");
     setIsEditOpen(true);
   };
 
@@ -974,6 +1140,38 @@ export default function RequirementsPage() {
                         <p className="text-xs text-muted-foreground">上传中...</p>
                       )}
                     </div>
+                    {/* AI 建议按钮 */}
+                    <div className="pt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleCreateSuggest}
+                        disabled={isCreateSuggesting || (!newReq.title.trim() && !newReq.description.trim())}
+                      >
+                        {isCreateSuggesting ? (
+                          <>
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            获取建议中...
+                          </>
+                        ) : (
+                          "💡 AI建议"
+                        )}
+                      </Button>
+                    </div>
+                    {/* AI 建议错误 */}
+                    {createSuggestError && (
+                      <p className="text-sm text-destructive">{createSuggestError}</p>
+                    )}
+                    {/* AI 建议面板 */}
+                    {createSuggestion && (
+                      <AISuggestionPanel
+                        suggestion={createSuggestion}
+                        onAdoptDescription={(desc) =>
+                          setNewReq((prev) => ({ ...prev, description: desc }))
+                        }
+                      />
+                    )}
                   </div>
                   <DialogFooter>
                     <Button
@@ -1233,6 +1431,38 @@ export default function RequirementsPage() {
                   preview="edit"
                 />
               </div>
+              {/* AI 建议按钮 */}
+              <div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleEditSuggest}
+                  disabled={isEditSuggesting || (!editForm.title.trim() && !editForm.description.trim())}
+                >
+                  {isEditSuggesting ? (
+                    <>
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      获取建议中...
+                    </>
+                  ) : (
+                    "💡 AI建议"
+                  )}
+                </Button>
+              </div>
+              {/* AI 建议错误 */}
+              {editSuggestError && (
+                <p className="text-sm text-destructive">{editSuggestError}</p>
+              )}
+              {/* AI 建议面板 */}
+              {editSuggestion && (
+                <AISuggestionPanel
+                  suggestion={editSuggestion}
+                  onAdoptDescription={(desc) =>
+                    setEditForm((prev) => ({ ...prev, description: desc }))
+                  }
+                />
+              )}
             </div>
             <DialogFooter>
               <Button

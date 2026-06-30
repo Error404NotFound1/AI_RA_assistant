@@ -67,6 +67,7 @@ import {
   useProjectStore,
   useArchitectureStore,
 } from "@/lib/project-store";
+import { aiReviewAPI } from "@/lib/api";
 
 // ADD 方法关注的质量属性
 const QUALITY_ATTRIBUTES = [
@@ -116,12 +117,38 @@ function ArchitectureDetailCard({
   const [compCreateData, setCompCreateData] = useState({ name: "", comp_type: "", responsibility: "", interfaces: "", dependencies: "" });
   const [compEditData, setCompEditData] = useState({ id: "", name: "", comp_type: "", responsibility: "", interfaces: "", dependencies: "" });
   const [activeTab, setActiveTab] = useState("overview");
+  const [isAiReviewing, setIsAiReviewing] = useState(false);
+  const [aiReviewResult, setAiReviewResult] = useState<any>(null);
+  const [aiReviewError, setAiReviewError] = useState("");
+  const [archStats, setArchStats] = useState<{ recommend_count: number; view_count: number; review_count: number } | null>(null);
+
+  // 加载统计数据
+  useEffect(() => {
+    aiReviewAPI.getArchStats(projectId, solution.id)
+      .then((res) => setArchStats(res.data))
+      .catch(() => { /* 静默处理 */ });
+  }, [projectId, solution.id]);
 
   const handleTabChange = (value: string) => {
     setActiveTab(value);
     if (value === "reviews") fetchReviews(projectId, solution.id);
     else if (value === "adrs") fetchADRs(projectId, solution.id);
     else if (value === "components") fetchManagedComponents(projectId, solution.id);
+  };
+
+  const handleAiReview = async () => {
+    setIsAiReviewing(true);
+    setAiReviewError("");
+    try {
+      const res = await aiReviewAPI.aiArchReview(projectId, solution.id);
+      setAiReviewResult(res.data);
+      // 刷新评审列表
+      await fetchReviews(projectId, solution.id);
+    } catch (err: any) {
+      setAiReviewError(err.response?.data?.detail || "AI评审失败，请稍后重试");
+    } finally {
+      setIsAiReviewing(false);
+    }
   };
 
   const handleGenerateDoc = async () => {
@@ -290,10 +317,17 @@ function ArchitectureDetailCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <CardTitle className="text-base">{solution.name}</CardTitle>
               {solution.pattern && <Badge variant="outline">{solution.pattern}</Badge>}
               <Badge variant="secondary">v{solution.version}</Badge>
+              {archStats && (
+                <>
+                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-300">👍 {archStats.recommend_count}</Badge>
+                  <Badge variant="outline" className="text-xs bg-gray-50 text-gray-600 border-gray-300">👁 {archStats.view_count}</Badge>
+                  <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-300">📝 {archStats.review_count}</Badge>
+                </>
+              )}
             </div>
             <CardDescription>{solution.description || "AI 推荐的架构方案"}</CardDescription>
           </div>
@@ -477,13 +511,79 @@ function ArchitectureDetailCard({
             <TabsContent value="reviews" className="space-y-4">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-semibold">评审列表</h4>
-                <Button size="sm" variant="ghost" onClick={() => fetchReviews(projectId, solution.id)}><RefreshCw className="h-4 w-4" /></Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="default" onClick={handleAiReview} disabled={isAiReviewing}>
+                    {isAiReviewing ? (
+                      <><span className="mr-2 h-4 w-4 inline-block animate-spin rounded-full border-2 border-white border-t-transparent" />AI评审中...</>
+                    ) : (
+                      <>🤖 AI智能评审</>
+                    )}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => fetchReviews(projectId, solution.id)}><RefreshCw className="h-4 w-4" /></Button>
+                </div>
               </div>
-              {reviews.length === 0 ? (
+              {aiReviewError && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{aiReviewError}</div>
+              )}
+              {aiReviewResult && (
+                <div className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h5 className="text-sm font-semibold flex items-center gap-2">🤖 AI 评审结果</h5>
+                    {aiReviewResult.overall_rating != null && (
+                      <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300">
+                        ⭐ {aiReviewResult.overall_rating}/10
+                      </Badge>
+                    )}
+                  </div>
+                  {aiReviewResult.summary && (
+                    <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
+                      <p className="text-sm font-medium text-blue-800">{aiReviewResult.summary}</p>
+                    </div>
+                  )}
+                  {aiReviewResult.quality_assessment && (
+                    <div>
+                      <p className="text-xs font-semibold mb-2 text-muted-foreground">五维度质量评估</p>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {Object.entries(aiReviewResult.quality_assessment as Record<string, any>).map(([key, val]) => (
+                          <div key={key} className="rounded-md border p-2 text-center">
+                            <p className="text-xs text-muted-foreground">{key}</p>
+                            <p className="text-sm font-semibold">{typeof val === 'object' ? (val as any)?.score ?? JSON.stringify(val) : String(val)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {aiReviewResult.defects && (aiReviewResult.defects as any[]).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold mb-1 text-red-700">缺陷列表</p>
+                      <ul className="space-y-1">
+                        {(aiReviewResult.defects as any[]).map((d: any, i: number) => (
+                          <li key={i} className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
+                            {typeof d === 'string' ? d : d.description || JSON.stringify(d)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {aiReviewResult.suggestions && (aiReviewResult.suggestions as any[]).length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold mb-1 text-blue-700">改进建议</p>
+                      <ul className="space-y-1">
+                        {(aiReviewResult.suggestions as any[]).map((s: any, i: number) => (
+                          <li key={i} className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded p-2">
+                            {typeof s === 'string' ? s : s.description || JSON.stringify(s)}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+              {reviews.length === 0 && !aiReviewResult ? (
                 <p className="text-sm text-muted-foreground text-center py-6">暂无评审记录</p>
-              ) : (
+              ) : reviews.length > 0 ? (
                 <Table>
-                  <TableHeader><TableRow><TableHead>评审内容</TableHead><TableHead>评分</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+                  <TableHeader><TableRow><TableHead>评审内容</TableHead><TableHead>评分</TableHead><TableHead>状态</TableHead><TableHead>来源</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
                   <TableBody>
                     {reviews.map((r: any) => (
                       <TableRow key={r.id}>
@@ -499,12 +599,19 @@ function ArchitectureDetailCard({
                             </SelectContent>
                           </Select>
                         </TableCell>
+                        <TableCell>
+                          {r.reviewer_id === "ai" || r.comment?.startsWith("[AI") ? (
+                            <Badge className="bg-purple-100 text-purple-800 border-purple-300 text-xs">AI</Badge>
+                          ) : (
+                            <Badge variant="secondary" className="text-xs">人工</Badge>
+                          )}
+                        </TableCell>
                         <TableCell><Button size="sm" variant="ghost" onClick={() => handleDeleteReview(r.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button></TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              )}
+              ) : null}
             </TabsContent>
             {/* Tab 3 - ADR 管理 */}
             <TabsContent value="adrs" className="space-y-4">

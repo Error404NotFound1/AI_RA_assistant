@@ -201,6 +201,27 @@ class AttachmentUploadResponse(BaseModel):
     extracted_text: str | None = None
 
 
+# ===== 操作日志相关 =====
+class OperationLogPublic(BaseModel):
+    id: uuid.UUID
+    user_id: uuid.UUID | None = None
+    username: str | None = None
+    action: str
+    target_type: str | None = None
+    target_id: uuid.UUID | None = None
+    detail: dict | None = None
+    created_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class OperationLogListResponse(BaseModel):
+    items: list[OperationLogPublic]
+    total: int
+    page: int
+    page_size: int
+
+
 # ===== 通用响应 =====
 class MessageResponse(BaseModel):
     message: str
@@ -318,6 +339,28 @@ class TraceabilityLinkPublic(BaseModel):
     mapping_type: str | None = None
     confidence: float | None = None
     rationale: str | None = None
+    model_config = {"from_attributes": True}
+
+
+# ===== AI 架构评审响应 =====
+class AIReviewResponse(BaseModel):
+    """AI 架构评审响应"""
+    review_id: uuid.UUID
+    solution_id: uuid.UUID
+    reviewer_id: uuid.UUID
+    comment: str
+    rating: int | None = None
+    status: str
+    created_at: datetime | None = None
+    # AI 分析详情
+    quality_assessment: dict | None = None
+    pattern_fitness: str | None = None
+    component_analysis: str | None = None
+    defects: list[str] | None = None
+    suggestions: list[str] | None = None
+    overall_rating: int | None = None
+    summary: str | None = None
+
     model_config = {"from_attributes": True}
 
 

@@ -5,7 +5,7 @@ import json
 import uuid
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import DBSession, CurrentUser, RequireRE
@@ -33,6 +33,7 @@ from app.llm.prompts.requirement_extractor import (
     DFD_SYSTEM_PROMPT, DFD_USER_TEMPLATE,
     ER_DIAGRAM_SYSTEM_PROMPT, ER_USER_TEMPLATE,
     QUALITY_CHECKER_SYSTEM_PROMPT, QUALITY_CHECKER_USER_TEMPLATE,
+    REQUIREMENT_SUGGEST_SYSTEM_PROMPT, REQUIREMENT_SUGGEST_USER_TEMPLATE,
 )
 
 router = APIRouter(prefix="/projects/{project_id}/requirements", tags=["需求"])
@@ -172,6 +173,61 @@ async def create_requirement(
     await db.flush()
     await db.refresh(req)
     return req
+
+
+@router.post("/suggest")
+async def suggest_requirement(
+    project_id: uuid.UUID,
+    data: dict,
+    db: DBSession,
+    current_user: RequireRE,
+):
+    """AI 智能建议 - 根据需求片段提供完善建议"""
+    try:
+        title = data.get("title", "")
+        description = data.get("description", "")
+
+        if not title.strip() and not description.strip():
+            raise HTTPException(status_code=400, detail="请至少输入需求标题或描述")
+
+        # 获取项目信息作为上下文
+        proj_result = await db.execute(select(Project).where(Project.id == project_id))
+        project = proj_result.scalar_one_or_none()
+        if not project:
+            raise HTTPException(status_code=404, detail="项目不存在")
+
+        project_context = f"{project.name}: {project.description or '无描述'}"
+
+        # 调用 LLM
+        provider = get_llm_provider()
+        user_prompt = REQUIREMENT_SUGGEST_USER_TEMPLATE.format(
+            title=title or "未填写",
+            description=description or "未填写",
+            project_context=project_context,
+        )
+        result = await provider.complete(
+            REQUIREMENT_SUGGEST_SYSTEM_PROMPT, user_prompt, temperature=0.4
+        )
+
+        if not result.parsed_json:
+            raise HTTPException(status_code=500, detail="AI 建议结果解析失败")
+
+        # 记录操作日志
+        db.add(OperationLog(
+            user_id=current_user.id,
+            action="suggest_requirement",
+            target_type="project",
+            target_id=project_id,
+            detail={"title": title, "description": description[:100]},
+        ))
+        await db.commit()
+
+        return result.parsed_json
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI 建议生成失败: {str(e)}")
 
 
 @router.get("/{req_id}", response_model=RequirementPublic)
@@ -1006,3 +1062,44 @@ async def re_analyze_requirement(
     ))
 
     return analysis_result["analysis"]
+
+
+@router.get("/{requirement_id}/stats", response_model=dict)
+async def get_requirement_stats(
+    project_id: uuid.UUID, requirement_id: uuid.UUID,
+    current_user: CurrentUser, db: DBSession,
+):
+    """获取需求统计计数"""
+    # 验证需求存在
+    result = await db.execute(
+        select(Requirement).where(
+            Requirement.id == requirement_id,
+            Requirement.project_id == project_id,
+        )
+    )
+    req = result.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=404, detail="需求不存在")
+
+    # analyze_count: action 包含 "analyze" 且 target_id=requirement_id
+    analyze_result = await db.execute(
+        select(func.count()).select_from(OperationLog).where(
+            OperationLog.action.contains("analyze"),
+            OperationLog.target_id == requirement_id,
+        )
+    )
+    analyze_count = analyze_result.scalar() or 0
+
+    # view_count: action="view_requirement" 且 target_id=requirement_id
+    view_result = await db.execute(
+        select(func.count()).select_from(OperationLog).where(
+            OperationLog.action == "view_requirement",
+            OperationLog.target_id == requirement_id,
+        )
+    )
+    view_count = view_result.scalar() or 0
+
+    return {
+        "analyze_count": analyze_count,
+        "view_count": view_count,
+    }

@@ -84,6 +84,8 @@ export const requirementAPI = {
     api.delete(`/projects/${projectId}/requirements/${reqId}`),
   reAnalyze: (projectId: string, reqId: string) =>
     api.post(`/projects/${projectId}/requirements/${reqId}/re-analyze`),
+  suggestRequirement: (projectId: string, data: { title: string; description: string }) =>
+    api.post(`/projects/${projectId}/requirements/suggest`, data),
 };
 
 // ===== 架构 API =====
@@ -196,8 +198,25 @@ export const adminAPI = {
     api.put(`/admin/users/${userId}/status`),
   getDashboard: () => api.get("/admin/dashboard"),
   getStatistics: () => api.get("/admin/statistics"),
-  getLogs: (params?: { action?: string; limit?: number }) =>
+  getLogs: (params?: { page?: number; page_size?: number; action?: string; user_id?: string; target_type?: string; start_date?: string; end_date?: string }) =>
     api.get("/admin/logs", { params }),
+  getLogDetail: (logId: string) =>
+    api.get(`/admin/logs/${logId}`),
+  exportLogs: (params?: { action?: string; user_id?: string; target_type?: string; start_date?: string; end_date?: string }) =>
+    api.get("/admin/logs/export", { params, responseType: "blob" }),
+};
+
+// ===== AI 评审 & 统计 API =====
+export const aiReviewAPI = {
+  // AI 架构评审
+  aiArchReview: (projectId: string, solutionId: string) =>
+    api.post(`/projects/${projectId}/architectures/${solutionId}/ai-review`),
+  // 架构方案统计
+  getArchStats: (projectId: string, solutionId: string) =>
+    api.get(`/projects/${projectId}/architectures/${solutionId}/stats`),
+  // 需求统计
+  getRequirementStats: (projectId: string, requirementId: string) =>
+    api.get(`/projects/${projectId}/requirements/${requirementId}/stats`),
 };
 
 export default api;

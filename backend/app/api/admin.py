@@ -1,7 +1,12 @@
 """管理员 API"""
 
+import csv
+import io
 import uuid
-from fastapi import APIRouter, HTTPException, status
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,7 +17,10 @@ from app.models.document import OperationLog
 from app.models.requirement import Requirement
 from app.models.project import Project
 from app.models.architecture import ArchitectureSolution
-from app.schemas.schemas import UserPublic, UserRoleUpdate, MessageResponse
+from app.schemas.schemas import (
+    UserPublic, UserRoleUpdate, MessageResponse,
+    OperationLogPublic, OperationLogListResponse,
+)
 
 router = APIRouter(prefix="/admin", tags=["系统管理"])
 
@@ -171,26 +179,137 @@ async def get_statistics(
     }
 
 
-@router.get("/logs", response_model=list[dict])
-async def list_logs(
-    admin: RequireAdmin, db: DBSession,
-    action: str | None = None, limit: int = 50,
-):
-    """查询操作日志"""
-    query = select(OperationLog).order_by(OperationLog.created_at.desc()).limit(limit)
+def _build_log_filter(query, action=None, user_id=None, target_type=None, start_date=None, end_date=None):
+    """构建日志查询过滤条件"""
     if action:
         query = query.where(OperationLog.action == action)
+    if user_id:
+        query = query.where(OperationLog.user_id == user_id)
+    if target_type:
+        query = query.where(OperationLog.target_type == target_type)
+    if start_date:
+        query = query.where(OperationLog.created_at >= start_date)
+    if end_date:
+        query = query.where(OperationLog.created_at <= end_date)
+    return query
+
+
+@router.get("/logs/export")
+async def export_logs(
+    admin: RequireAdmin,
+    db: DBSession,
+    action: str | None = None,
+    user_id: uuid.UUID | None = None,
+    target_type: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+):
+    """导出操作日志CSV"""
+    query = (
+        select(OperationLog, User.username)
+        .outerjoin(User, OperationLog.user_id == User.id)
+        .order_by(OperationLog.created_at.desc())
+    )
+    query = _build_log_filter(query, action, user_id, target_type, start_date, end_date)
     result = await db.execute(query)
-    logs = result.scalars().all()
-    return [
-        {
-            "id": str(log.id),
-            "user_id": str(log.user_id) if log.user_id else None,
-            "action": log.action,
-            "target_type": log.target_type,
-            "target_id": str(log.target_id) if log.target_id else None,
-            "detail": log.detail,
-            "created_at": log.created_at.isoformat() if log.created_at else None,
-        }
-        for log in logs
+    rows = result.all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["时间", "用户名", "操作", "目标类型", "目标ID", "详情"])
+    for log, username in rows:
+        writer.writerow([
+            log.created_at.isoformat() if log.created_at else "",
+            username or "",
+            log.action or "",
+            log.target_type or "",
+            str(log.target_id) if log.target_id else "",
+            str(log.detail) if log.detail else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=operation_logs.csv"},
+    )
+
+
+@router.get("/logs/{log_id}", response_model=OperationLogPublic)
+async def get_log_detail(
+    log_id: uuid.UUID,
+    admin: RequireAdmin,
+    db: DBSession,
+):
+    """获取单条日志详情"""
+    result = await db.execute(
+        select(OperationLog, User.username)
+        .outerjoin(User, OperationLog.user_id == User.id)
+        .where(OperationLog.id == log_id)
+    )
+    row = result.one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="日志不存在")
+    log, username = row
+    return OperationLogPublic(
+        id=log.id,
+        user_id=log.user_id,
+        username=username,
+        action=log.action,
+        target_type=log.target_type,
+        target_id=log.target_id,
+        detail=log.detail,
+        created_at=log.created_at,
+    )
+
+
+@router.get("/logs", response_model=OperationLogListResponse)
+async def list_logs(
+    admin: RequireAdmin,
+    db: DBSession,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    action: str | None = None,
+    user_id: uuid.UUID | None = None,
+    target_type: str | None = None,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+):
+    """查询操作日志（分页）"""
+    # 计算总数
+    count_query = select(func.count(OperationLog.id))
+    count_query = _build_log_filter(count_query, action, user_id, target_type, start_date, end_date)
+    total = await db.scalar(count_query) or 0
+
+    # 分页查询
+    query = (
+        select(OperationLog, User.username)
+        .outerjoin(User, OperationLog.user_id == User.id)
+        .order_by(OperationLog.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    query = _build_log_filter(query, action, user_id, target_type, start_date, end_date)
+    result = await db.execute(query)
+    rows = result.all()
+
+    items = [
+        OperationLogPublic(
+            id=log.id,
+            user_id=log.user_id,
+            username=username,
+            action=log.action,
+            target_type=log.target_type,
+            target_id=log.target_id,
+            detail=log.detail,
+            created_at=log.created_at,
+        )
+        for log, username in rows
     ]
+
+    return OperationLogListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )

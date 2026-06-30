@@ -11,24 +11,15 @@ import {
   UserCog,
   ToggleLeft,
   ToggleRight,
-  FileText,
-  Paperclip,
-  TrendingUp,
-  Target,
-  ListChecks,
+  Download,
+  Search,
+  RotateCcw,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip as RechartsTooltip,
-  ResponsiveContainer,
-  Cell,
-} from "recharts";
 import { AppHeader } from "@/components/layout/app-header";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Card,
   CardContent,
@@ -53,10 +44,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Progress } from "@/components/ui/progress";
 import { useAuthStore } from "@/lib/auth-store";
 import { adminAPI } from "@/lib/api";
 
+// ===== 类型定义 =====
 interface AdminUser {
   id: string;
   username: string;
@@ -94,8 +85,34 @@ interface StatisticsData {
     total: number;
     total_size: number;
   };
+  project_activity?: Array<{
+    project_id: string;
+    project_name: string;
+    requirement_count: number;
+    architecture_count: number;
+    last_activity: string | null;
+  }>;
 }
 
+interface LogItem {
+  id: string;
+  user_id: string;
+  username: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  detail: string;
+  created_at: string;
+}
+
+interface LogFilters {
+  action: string;
+  target_type: string;
+  start_date: string;
+  end_date: string;
+}
+
+// ===== 工具函数 =====
 function getRoleLabel(role: string) {
   switch (role) {
     case "RE":
@@ -120,6 +137,44 @@ function getRoleBadgeVariant(role: string) {
   }
 }
 
+function getActionBadgeClass(action: string): string {
+  if (action.startsWith("create")) return "bg-green-100 text-green-800 border-green-200";
+  if (action.startsWith("update")) return "bg-blue-100 text-blue-800 border-blue-200";
+  if (action.startsWith("delete")) return "bg-red-100 text-red-800 border-red-200";
+  if (["analyze", "recommend", "auto_map", "generate_document"].includes(action)) return "bg-purple-100 text-purple-800 border-purple-200";
+  return "bg-gray-100 text-gray-800 border-gray-200";
+}
+
+function getActionLabel(action: string): string {
+  const map: Record<string, string> = {
+    analyze: "分析",
+    recommend: "推荐",
+    auto_map: "自动映射",
+    generate_document: "生成文档",
+    create: "创建",
+    update: "更新",
+    delete: "删除",
+  };
+  return map[action] || action;
+}
+
+function getTargetTypeLabel(type: string): string {
+  const map: Record<string, string> = {
+    requirement: "需求",
+    architecture: "架构",
+    document: "文档",
+    project: "项目",
+    user: "用户",
+  };
+  return map[type] || type;
+}
+
+function truncateId(id: string, maxLen = 8): string {
+  if (!id) return "-";
+  return id.length > maxLen ? id.slice(0, maxLen) + "..." : id;
+}
+
+// ===== 主组件 =====
 export default function AdminPage() {
   const { user } = useAuthStore();
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -131,6 +186,28 @@ export default function AdminPage() {
   });
   const [statistics, setStatistics] = useState<StatisticsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // 日志状态
+  const [logs, setLogs] = useState<LogItem[]>([]);
+  const [logsTotal, setLogsTotal] = useState(0);
+  const [logsPage, setLogsPage] = useState(1);
+  const [logsPageSize] = useState(20);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logFilters, setLogFilters] = useState<LogFilters>({
+    action: "",
+    target_type: "",
+    start_date: "",
+    end_date: "",
+  });
+  const [activeFilters, setActiveFilters] = useState<LogFilters>({
+    action: "",
+    target_type: "",
+    start_date: "",
+    end_date: "",
+  });
+
+  // 统计加载状态
+  const [statsLoading, setStatsLoading] = useState(false);
 
   useEffect(() => {
     async function load() {
@@ -152,6 +229,87 @@ export default function AdminPage() {
     }
     load();
   }, []);
+
+  // 加载日志
+  const loadLogs = async (page: number, filters: LogFilters) => {
+    setLogsLoading(true);
+    try {
+      const params: Record<string, string | number> = { page, page_size: logsPageSize };
+      if (filters.action) params.action = filters.action;
+      if (filters.target_type) params.target_type = filters.target_type;
+      if (filters.start_date) params.start_date = filters.start_date;
+      if (filters.end_date) params.end_date = filters.end_date;
+      const res = await adminAPI.getLogs(params as Parameters<typeof adminAPI.getLogs>[0]);
+      setLogs(res.data.items || []);
+      setLogsTotal(res.data.total || 0);
+      setLogsPage(res.data.page || page);
+    } catch {
+      setLogs([]);
+      setLogsTotal(0);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  // 加载统计详情
+  const loadStatistics = async () => {
+    setStatsLoading(true);
+    try {
+      const res = await adminAPI.getStatistics();
+      setStatistics(res.data);
+    } catch {
+      // 静默处理
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const handleSearchLogs = () => {
+    setActiveFilters({ ...logFilters });
+    loadLogs(1, logFilters);
+  };
+
+  const handleResetFilters = () => {
+    const emptyFilters: LogFilters = { action: "", target_type: "", start_date: "", end_date: "" };
+    setLogFilters(emptyFilters);
+    setActiveFilters(emptyFilters);
+    loadLogs(1, emptyFilters);
+  };
+
+  const handleLogsPageChange = (newPage: number) => {
+    loadLogs(newPage, activeFilters);
+  };
+
+  const handleExportLogs = async () => {
+    try {
+      const params: Record<string, string> = {};
+      if (activeFilters.action) params.action = activeFilters.action;
+      if (activeFilters.target_type) params.target_type = activeFilters.target_type;
+      if (activeFilters.start_date) params.start_date = activeFilters.start_date;
+      if (activeFilters.end_date) params.end_date = activeFilters.end_date;
+      const res = await adminAPI.exportLogs(params as Parameters<typeof adminAPI.exportLogs>[0]);
+      const blob = new Blob([res.data], { type: "text/csv" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `operation_logs_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      // 静默处理
+    }
+  };
+
+  const handleTabChange = (value: string) => {
+    if (value === "logs" && logs.length === 0) {
+      loadLogs(1, activeFilters);
+    }
+    if (value === "statistics") {
+      loadStatistics();
+    }
+  };
 
   const handleRoleChange = async (userId: string, role: string) => {
     try {
@@ -176,6 +334,14 @@ export default function AdminPage() {
       // 静默处理
     }
   };
+
+  // 计算统计卡片数据
+  const aiUsageTotal = statistics?.ai_usage?.reduce((sum, item) => sum + item.count, 0) || 0;
+  const coverageRate = statistics?.requirement_coverage?.coverage_rate || 0;
+  const recommendCount = statistics?.ai_usage?.find((i) => i.action === "recommend")?.count || 0;
+  const docGenCount = statistics?.ai_usage?.find((i) => i.action === "generate_document")?.count || 0;
+
+  const totalPages = Math.ceil(logsTotal / logsPageSize);
 
   // 非管理员不可访问
   if (user?.role !== "admin") {
@@ -263,8 +429,8 @@ export default function AdminPage() {
           </Card>
         </div>
 
-        {/* 用户管理 */}
-        <Tabs defaultValue="users">
+        {/* 标签页 */}
+        <Tabs defaultValue="users" onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="users">
               <Users className="mr-2 h-4 w-4" />
@@ -280,6 +446,7 @@ export default function AdminPage() {
             </TabsTrigger>
           </TabsList>
 
+          {/* 用户管理 */}
           <TabsContent value="users" className="space-y-4">
             <Card>
               <CardHeader>
@@ -360,18 +527,271 @@ export default function AdminPage() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="logs">
+          {/* 操作日志 */}
+          <TabsContent value="logs" className="space-y-4">
             <Card>
               <CardHeader>
                 <CardTitle>操作日志</CardTitle>
                 <CardDescription>系统操作审计记录</CardDescription>
               </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground text-center py-8">
-                  操作日志将通过 API 加载
-                </p>
+              <CardContent className="space-y-4">
+                {/* 过滤栏 */}
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">操作类型</label>
+                    <Select
+                      value={logFilters.action || "all"}
+                      onValueChange={(v) => setLogFilters((f) => ({ ...f, action: (!v || v === "all") ? "" : v }))}
+                    >
+                      <SelectTrigger className="w-[140px] h-9">
+                        <SelectValue placeholder="全部操作" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部操作</SelectItem>
+                        <SelectItem value="analyze">分析</SelectItem>
+                        <SelectItem value="recommend">推荐</SelectItem>
+                        <SelectItem value="auto_map">自动映射</SelectItem>
+                        <SelectItem value="generate_document">生成文档</SelectItem>
+                        <SelectItem value="create">创建</SelectItem>
+                        <SelectItem value="update">更新</SelectItem>
+                        <SelectItem value="delete">删除</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">目标类型</label>
+                    <Select
+                      value={logFilters.target_type || "all"}
+                      onValueChange={(v) => setLogFilters((f) => ({ ...f, target_type: (!v || v === "all") ? "" : v }))}
+                    >
+                      <SelectTrigger className="w-[140px] h-9">
+                        <SelectValue placeholder="全部类型" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">全部类型</SelectItem>
+                        <SelectItem value="requirement">需求</SelectItem>
+                        <SelectItem value="architecture">架构</SelectItem>
+                        <SelectItem value="document">文档</SelectItem>
+                        <SelectItem value="project">项目</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">开始日期</label>
+                    <Input
+                      type="date"
+                      className="w-[150px] h-9"
+                      value={logFilters.start_date}
+                      onChange={(e) => setLogFilters((f) => ({ ...f, start_date: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs text-muted-foreground">结束日期</label>
+                    <Input
+                      type="date"
+                      className="w-[150px] h-9"
+                      value={logFilters.end_date}
+                      onChange={(e) => setLogFilters((f) => ({ ...f, end_date: e.target.value }))}
+                    />
+                  </div>
+                  <Button size="sm" onClick={handleSearchLogs}>
+                    <Search className="h-4 w-4 mr-1" />
+                    搜索
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={handleResetFilters}>
+                    <RotateCcw className="h-4 w-4 mr-1" />
+                    重置
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={handleExportLogs}>
+                    <Download className="h-4 w-4 mr-1" />
+                    导出CSV
+                  </Button>
+                </div>
+
+                {/* 日志表格 */}
+                {logsLoading ? (
+                  <div className="flex justify-center py-8">
+                    <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                  </div>
+                ) : logs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    暂无日志记录
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>时间</TableHead>
+                        <TableHead>用户名</TableHead>
+                        <TableHead>操作类型</TableHead>
+                        <TableHead>目标类型</TableHead>
+                        <TableHead>目标ID</TableHead>
+                        <TableHead>详情摘要</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {logs.map((log) => (
+                        <TableRow key={log.id}>
+                          <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                            {new Date(log.created_at).toLocaleString("zh-CN")}
+                          </TableCell>
+                          <TableCell className="font-medium">{log.username}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={getActionBadgeClass(log.action)}>
+                              {getActionLabel(log.action)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>{getTargetTypeLabel(log.target_type)}</TableCell>
+                          <TableCell className="text-sm text-muted-foreground font-mono" title={log.target_id}>
+                            {truncateId(log.target_id)}
+                          </TableCell>
+                          <TableCell className="text-sm max-w-[200px] truncate" title={log.detail}>
+                            {log.detail || "-"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+
+                {/* 分页 */}
+                {logsTotal > 0 && (
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-sm text-muted-foreground">
+                      共 {logsTotal} 条记录
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={logsPage <= 1}
+                        onClick={() => handleLogsPageChange(logsPage - 1)}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        上一页
+                      </Button>
+                      <span className="text-sm">
+                        第 {logsPage} / {totalPages} 页
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={logsPage >= totalPages}
+                        onClick={() => handleLogsPageChange(logsPage + 1)}
+                      >
+                        下一页
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* 统计信息 */}
+          <TabsContent value="statistics" className="space-y-4">
+            {statsLoading ? (
+              <div className="flex justify-center py-8">
+                <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+              </div>
+            ) : (
+              <>
+                {/* 统计卡片 */}
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        AI 使用总频次
+                      </CardTitle>
+                      <Activity className="h-4 w-4 text-purple-600" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">{aiUsageTotal}</div>
+                      <p className="text-xs text-muted-foreground mt-1">所有 AI 功能调用总计</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        需求分析覆盖率
+                      </CardTitle>
+                      <ShieldCheck className="h-4 w-4 text-green-600" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">{coverageRate.toFixed(1)}%</div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {statistics?.requirement_coverage?.analyzed || 0} / {statistics?.requirement_coverage?.total || 0} 已分析
+                      </p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        架构推荐总次数
+                      </CardTitle>
+                      <BarChart3 className="h-4 w-4 text-blue-600" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">{recommendCount}</div>
+                      <p className="text-xs text-muted-foreground mt-1">架构方案推荐调用</p>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between pb-2">
+                      <CardTitle className="text-sm font-medium text-muted-foreground">
+                        文档生成总次数
+                      </CardTitle>
+                      <BarChart3 className="h-4 w-4 text-orange-600" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold">{docGenCount}</div>
+                      <p className="text-xs text-muted-foreground mt-1">文档自动生成调用</p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* 项目活跃度列表 */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>项目活跃度</CardTitle>
+                    <CardDescription>各项目使用情况统计</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {statistics?.project_activity && statistics.project_activity.length > 0 ? (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>项目名称</TableHead>
+                            <TableHead>需求数</TableHead>
+                            <TableHead>架构方案数</TableHead>
+                            <TableHead>最近活动时间</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {statistics.project_activity.map((proj) => (
+                            <TableRow key={proj.project_id}>
+                              <TableCell className="font-medium">{proj.project_name}</TableCell>
+                              <TableCell>{proj.requirement_count}</TableCell>
+                              <TableCell>{proj.architecture_count}</TableCell>
+                              <TableCell className="text-sm text-muted-foreground">
+                                {proj.last_activity
+                                  ? new Date(proj.last_activity).toLocaleString("zh-CN")
+                                  : "-"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
+                      <p className="text-sm text-muted-foreground text-center py-8">
+                        暂无项目活动数据
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </>
+            )}
           </TabsContent>
         </Tabs>
       </main>

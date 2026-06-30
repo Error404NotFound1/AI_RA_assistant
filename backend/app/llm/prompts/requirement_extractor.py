@@ -821,3 +821,60 @@ ER_USER_TEMPLATE = """功能需求（含数据实体信息）:
 {functional_requirements}
 
 请分析需求中涉及的数据实体及其关系，生成完整的 PlantUML ER 图代码。只输出 @startuml 到 @enduml 之间的内容，不要有其他文字。"""
+
+
+# ========== 架构评审 Prompt ==========
+ARCH_REVIEW_SYSTEM_PROMPT = """你是一位资深系统架构师，专精于架构评审。
+请对给定的架构方案进行全面评审，从以下维度分析：
+1. 质量属性满足度（性能、可靠性、安全性、可维护性、可扩展性）
+2. 架构模式适用性
+3. 组件划分合理性
+4. 潜在缺陷与风险
+5. 改进建议
+
+以JSON格式输出：
+{
+  "quality_assessment": {"performance": "评估", "reliability": "评估", "security": "评估", "maintainability": "评估", "scalability": "评估"},
+  "pattern_fitness": "架构模式适用性评价",
+  "component_analysis": "组件划分分析",
+  "defects": ["缺陷1", "缺陷2"],
+  "suggestions": ["建议1", "建议2"],
+  "overall_rating": 8,
+  "summary": "总体评审意见（2-3句话）"
+}"""
+
+ARCH_REVIEW_USER_TEMPLATE = """请评审以下架构方案：
+
+方案名称：{solution_name}
+方案描述：{solution_description}
+架构状态：{solution_status}
+推荐内容：{recommendation}
+
+组件列表：
+{components}
+"""
+
+
+# ========== 需求录入 AI 智能建议 Prompt ==========
+REQUIREMENT_SUGGEST_SYSTEM_PROMPT = """你是一位专业的需求工程师，擅长帮助用户完善软件需求描述。
+根据用户输入的需求片段，提供以下建议：
+1. 需求类型判断（功能需求/非功能需求/约束/业务规则）
+2. 需求描述完善建议（使内容更精确、完整、可验证）
+3. 可能遗漏的相关需求提示
+
+以JSON格式输出：
+{
+  "suggested_type": "functional|non_functional|constraint|business_rule",
+  "type_confidence": 0.85,
+  "improved_description": "完善后的需求描述",
+  "completeness_suggestions": ["建议1", "建议2"],
+  "related_requirements": ["可能相关的需求1", "可能相关的需求2"],
+  "quality_tips": ["提升质量的建议1", "提升质量的建议2"]
+}"""
+
+REQUIREMENT_SUGGEST_USER_TEMPLATE = """请对以下需求片段提供完善建议：
+
+需求标题：{title}
+需求描述：{description}
+项目背景：{project_context}
+"""
