@@ -218,6 +218,7 @@ ai-se-assistant/
 │   │   │   ├── architectures.py       # 架构推荐 + 评审 + ADR + 追溯 + 矩阵 + 文档/PlantUML 生成
 │   │   │   ├── documents.py           # 文档管理（生成/编辑/对比/导出）
 │   │   │   ├── uploads.py             # 文件上传（附件管理）
+│   │   │   ├── chat.py                # AI 助手对话（流式/非流式）
 │   │   │   └── admin.py               # 用户管理 + 仪表盘 + 统计 + 日志
 │   │   ├── core/                     # 核心配置
 │   │   │   ├── config.py             # 环境变量配置
@@ -231,7 +232,8 @@ ai-se-assistant/
 │   │   │   ├── project.py            # 项目 + 成员模型
 │   │   │   ├── requirement.py        # 需求 + 用户故事 + 质量评估 + 用例
 │   │   │   ├── architecture.py       # 架构方案 + 组件 + 评审 + ADR + 追溯
-│   │   │   └── document.py           # 文档 + 操作日志 + 附件
+│   │   │   ├── document.py           # 文档 + 操作日志 + 附件
+│   │   │   └── log.py                # 操作日志模型
 │   │   ├── llm/                      # AI 大模型服务层
 │   │   │   ├── provider.py           # LLM Provider 抽象基类 + 单例工厂
 │   │   │   ├── deepseek_provider.py  # DeepSeek 实现
@@ -240,11 +242,13 @@ ai-se-assistant/
 │   │   │       └── requirement_extractor.py  # 9 套 Prompt 模板
 │   │   ├── schemas/
 │   │   │   └── schemas.py            # Pydantic 请求/响应模型
+│   │   ├── services/
+│   │   │   └── document_parser.py    # 文档解析服务（提取文本内容）
 │   │   ├── init_db.py                # 数据库初始化脚本
 │   │   └── main.py                   # FastAPI 入口
 │   ├── tests/                        # 测试（内存 SQLite + mock LLM）
 │   │   ├── conftest.py               # 测试配置
-│   │   └── test_*.py                 # 7 个测试文件（39 个测试）
+│   │   └── test_*.py                 # 9 个测试文件（62 个测试）
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── .env                          # 环境变量（需配置 API Key）
