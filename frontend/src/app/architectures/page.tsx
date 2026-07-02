@@ -1,13 +1,13 @@
-// 架构设计与 AI 推荐页面
+// 架构设计与 AI 推荐页面 — 完整版
+// 包含：AI推荐、方案管理、组件CRUD、评审CRUD、ADR CRUD、AI评审、状态流转、PlantUML 渲染
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   BrainCircuit,
   LayoutDashboard,
-  Plus,
   Star,
   MessageSquare,
   FileCheck,
@@ -17,9 +17,15 @@ import {
   FileText,
   Code2,
   ImageIcon,
+  Plus,
+  Pencil,
   Trash2,
-  Edit,
+  CheckCircle,
+  Cpu,
+  Sparkles,
+  AlertTriangle,
   RefreshCw,
+  Eye,
 } from "lucide-react";
 import MDEditor from "@uiw/react-md-editor";
 import { encode as plantumlEncode } from "plantuml-encoder";
@@ -39,7 +45,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,24 +61,121 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   useProjectStore,
   useArchitectureStore,
 } from "@/lib/project-store";
 import { aiReviewAPI } from "@/lib/api";
 
-// ADD 方法关注的质量属性
+// ─────────────────────────── 常量 ───────────────────────────
+
 const QUALITY_ATTRIBUTES = [
   "性能", "可用性", "安全性", "可修改性", "可测试性",
   "易用性", "互操作性", "可靠性",
 ];
+
+const SOLUTION_STATUS_LABELS: Record<string, string> = {
+  proposed: "待评审",
+  selected: "已选定",
+  reviewed: "已评审",
+  confirmed: "已确认",
+};
+const SOLUTION_STATUS_NEXT: Record<string, string> = {
+  proposed: "selected",
+  selected: "reviewed",
+  reviewed: "confirmed",
+};
+const SOLUTION_STATUS_COLOR: Record<string, string> = {
+  proposed: "bg-yellow-100 text-yellow-700 border-yellow-300",
+  selected: "bg-blue-100 text-blue-700 border-blue-300",
+  reviewed: "bg-purple-100 text-purple-700 border-purple-300",
+  confirmed: "bg-green-100 text-green-700 border-green-300",
+};
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  open: "待处理",
+  addressed: "已响应",
+  resolved: "已解决",
+};
+const REVIEW_STATUS_NEXT: Record<string, string> = {
+  open: "addressed",
+  addressed: "resolved",
+};
+const REVIEW_STATUS_COLOR: Record<string, string> = {
+  open: "bg-red-100 text-red-700",
+  addressed: "bg-yellow-100 text-yellow-700",
+  resolved: "bg-green-100 text-green-700",
+};
+
+const ADR_STATUS_LABELS: Record<string, string> = {
+  proposed: "草案",
+  accepted: "已接受",
+  deprecated: "已废弃",
+  superseded: "已替代",
+};
+const ADR_STATUS_COLOR: Record<string, string> = {
+  proposed: "bg-yellow-100 text-yellow-700",
+  accepted: "bg-green-100 text-green-700",
+  deprecated: "bg-gray-100 text-gray-600",
+  superseded: "bg-red-100 text-red-700",
+};
+
+/** 将质量评分统一为 0-100 数值（兼容 LLM 返回的嵌套对象） */
+function normalizeQualityScore(value: unknown): number {
+  if (typeof value === "number") return Math.min(100, Math.max(0, value));
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.score === "number") return Math.min(100, Math.max(0, obj.score * 10));
+    if (typeof obj.value === "number") return Math.min(100, Math.max(0, obj.value));
+  }
+  return 0;
+}
+
+// ─────────────────────────── 类型 ───────────────────────────
+
+interface Review {
+  id: string;
+  solution_id: string;
+  reviewer_id: string;
+  comment: string;
+  rating: number;
+  status: string;
+  created_at: string | null;
+}
+
+interface ADR {
+  id: string;
+  solution_id: string;
+  project_id: string;
+  title: string;
+  context: string;
+  decision: string;
+  consequences: string | null;
+  status: string;
+  created_at: string | null;
+}
+
+interface ManagedComponent {
+  id: string;
+  solution_id: string;
+  name: string;
+  comp_type: string;
+  responsibility: string | null;
+  interfaces: unknown;
+  dependencies: unknown;
+}
+
+interface AIReviewResult {
+  review_id: string;
+  overall_rating: number;
+  summary: string;
+  quality_assessment: Record<string, unknown> | null;
+  pattern_fitness: Record<string, unknown> | null;
+  component_analysis: unknown[] | null;
+  defects: unknown[] | null;
+  suggestions: unknown[] | null;
+}
+
+// ─────────────────────────── 子组件：架构方案详情卡 ───────────────────────────
 
 function ArchitectureDetailCard({
   solution,
@@ -92,249 +194,219 @@ function ArchitectureDetailCard({
   projectId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
+
   const {
-    createReview, createADR, fetchSolution, generateArchDoc, generatePlantuml,
+    createReview, createADR,
+    generateArchDoc, generatePlantuml,
     isGeneratingDoc, isGeneratingPlantuml,
-    updateSolution, fetchReviews, updateReviewStatus, deleteReview,
+    fetchReviews, updateReviewStatus, deleteReview,
     fetchADRs, updateADR, deleteADR,
     fetchManagedComponents, createManagedComponent, updateManagedComponent, deleteManagedComponent,
+    updateSolution,
+    fetchSolutions,
     reviews, adrs, managedComponents,
   } = useArchitectureStore();
 
-  const [isReviewOpen, setIsReviewOpen] = useState(false);
-  const [isADROpen, setIsADROpen] = useState(false);
-  const [reviewData, setReviewData] = useState({ comment: "", rating: 3 });
-  const [adrData, setADRData] = useState({ title: "", context: "", decision: "", consequences: "" });
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [localReviews, setLocalReviews] = useState<Review[]>([]);
+  const [localADRs, setLocalADRs] = useState<ADR[]>([]);
+  const [localComponents, setLocalComponents] = useState<ManagedComponent[]>([]);
   const [localArchDoc, setLocalArchDoc] = useState<string | null>(null);
   const [localPlantuml, setLocalPlantuml] = useState<string | null>(null);
-  const [isSolutionEditOpen, setIsSolutionEditOpen] = useState(false);
-  const [solutionEditData, setSolutionEditData] = useState({ name: "", description: "", status: "", recommendation: "", quality_scores: "" });
-  const [isADREditOpen, setIsADREditOpen] = useState(false);
-  const [adrEditData, setADREditData] = useState({ id: "", title: "", context: "", decision: "", consequences: "", status: "" });
-  const [isCompCreateOpen, setIsCompCreateOpen] = useState(false);
-  const [isCompEditOpen, setIsCompEditOpen] = useState(false);
-  const [compCreateData, setCompCreateData] = useState({ name: "", comp_type: "", responsibility: "", interfaces: "", dependencies: "" });
-  const [compEditData, setCompEditData] = useState({ id: "", name: "", comp_type: "", responsibility: "", interfaces: "", dependencies: "" });
-  const [activeTab, setActiveTab] = useState("overview");
-  const [isAiReviewing, setIsAiReviewing] = useState(false);
-  const [aiReviewResult, setAiReviewResult] = useState<any>(null);
-  const [aiReviewError, setAiReviewError] = useState("");
-  const [archStats, setArchStats] = useState<{ recommend_count: number; view_count: number; review_count: number } | null>(null);
+  const [aiReviewResult, setAIReviewResult] = useState<AIReviewResult | null>(null);
+  const [isAIReviewing, setIsAIReviewing] = useState(false);
 
-  // 加载统计数据
+  // Dialog 状态
+  const [reviewDialog, setReviewDialog] = useState(false);
+  const [adrDialog, setADRDialog] = useState(false);
+  const [editADRDialog, setEditADRDialog] = useState<ADR | null>(null);
+  const [compDialog, setCompDialog] = useState(false);
+  const [editCompDialog, setEditCompDialog] = useState<ManagedComponent | null>(null);
+  const [aiReviewDialog, setAIReviewDialog] = useState(false);
+  const [confirmDeleteReview, setConfirmDeleteReview] = useState<string | null>(null);
+  const [confirmDeleteADR, setConfirmDeleteADR] = useState<string | null>(null);
+  const [confirmDeleteComp, setConfirmDeleteComp] = useState<string | null>(null);
+
+  const [reviewForm, setReviewForm] = useState({ comment: "", rating: 3 });
+  const [adrForm, setADRForm] = useState({ title: "", context: "", decision: "", consequences: "" });
+  const [compForm, setCompForm] = useState({ name: "", comp_type: "service", responsibility: "" });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [solutionStatus, setSolutionStatus] = useState(solution.status);
+
   useEffect(() => {
-    aiReviewAPI.getArchStats(projectId, solution.id)
-      .then((res) => setArchStats(res.data))
-      .catch(() => { /* 静默处理 */ });
-  }, [projectId, solution.id]);
+    setSolutionStatus(solution.status);
+  }, [solution.status]);
 
-  const handleTabChange = (value: string) => {
-    setActiveTab(value);
-    if (value === "reviews") fetchReviews(projectId, solution.id);
-    else if (value === "adrs") fetchADRs(projectId, solution.id);
-    else if (value === "components") fetchManagedComponents(projectId, solution.id);
-  };
+  const recommendation = solution.recommendation as {
+    recommended_patterns?: Array<{ name: string; suitability_score?: number; pros?: string[]; cons?: string[]; reason?: string }>;
+    components?: Array<{ name: string; type: string; responsibility?: string; technology?: string }>;
+    quality_verification?: Record<string, number>;
+    rationale?: string;
+    trade_offs?: string;
+    tech_stack?: Record<string, string[]>;
+  } | null;
 
-  const handleAiReview = async () => {
-    setIsAiReviewing(true);
-    setAiReviewError("");
-    try {
-      const res = await aiReviewAPI.aiArchReview(projectId, solution.id);
-      setAiReviewResult(res.data);
-      // 刷新评审列表
+  const qualityScores = solution.quality_scores as Record<string, number> | null;
+
+  // 展开时自动加载数据
+  const loadTabData = useCallback(async (tab: string) => {
+    if (tab === "reviews") {
       await fetchReviews(projectId, solution.id);
-    } catch (err: any) {
-      setAiReviewError(err.response?.data?.detail || "AI评审失败，请稍后重试");
-    } finally {
-      setIsAiReviewing(false);
+    } else if (tab === "adrs") {
+      await fetchADRs(projectId, solution.id);
+    } else if (tab === "components") {
+      await fetchManagedComponents(projectId, solution.id);
     }
+  }, [projectId, solution.id, fetchReviews, fetchADRs, fetchManagedComponents]);
+
+  useEffect(() => {
+    if (expanded) loadTabData(activeTab);
+  }, [expanded, activeTab, loadTabData]);
+
+  // 同步 store 数据到本地
+  useEffect(() => { setLocalReviews(reviews as Review[]); }, [reviews]);
+  useEffect(() => { setLocalADRs(adrs as ADR[]); }, [adrs]);
+  useEffect(() => { setLocalComponents(managedComponents as ManagedComponent[]); }, [managedComponents]);
+
+  // ─── 方案状态推进 ───
+  const handleAdvanceStatus = async () => {
+    const next = SOLUTION_STATUS_NEXT[solutionStatus];
+    if (!next) return;
+    await updateSolution(projectId, solution.id, { status: next });
+    setSolutionStatus(next);
+    await fetchSolutions(projectId);
   };
 
+  // ─── 生成文档 / PlantUML ───
   const handleGenerateDoc = async () => {
     const result = await generateArchDoc(projectId, solution.id);
     if (result) setLocalArchDoc(result);
   };
-
   const handleGeneratePlantuml = async () => {
     const result = await generatePlantuml(projectId, solution.id);
     if (result) setLocalPlantuml(result);
   };
 
-  const recommendation = solution.recommendation as {
-    pattern?: string;
-    components?: Array<{ name: string; type: string; description: string; technology?: string }>;
-    rationale?: string;
-    trade_offs?: string;
-  } | null;
+  // ─── AI 评审 ───
+  const handleAIReview = async () => {
+    setIsAIReviewing(true);
+    try {
+      const res = await aiReviewAPI.aiArchReview(projectId, solution.id);
+      setAIReviewResult(res.data as AIReviewResult);
+      setAIReviewDialog(true);
+      await fetchReviews(projectId, solution.id);
+    } catch {
+      // 静默处理
+    } finally {
+      setIsAIReviewing(false);
+    }
+  };
 
-  const qualityScores = solution.quality_scores as Record<string, number> | null;
-
-  const handleReview = async () => {
+  // ─── 提交评审 ───
+  const handleSubmitReview = async () => {
     setIsSubmitting(true);
     try {
-      await createReview(projectId, solution.id, reviewData);
-      setIsReviewOpen(false);
-      setReviewData({ comment: "", rating: 3 });
-      await fetchSolution(projectId, solution.id);
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
+      await createReview(projectId, solution.id, reviewForm);
+      setReviewDialog(false);
+      setReviewForm({ comment: "", rating: 3 });
+      await fetchReviews(projectId, solution.id);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleADR = async () => {
+  // ─── 提交 ADR ───
+  const handleSubmitADR = async () => {
     setIsSubmitting(true);
     try {
-      await createADR(projectId, solution.id, adrData);
-      setIsADROpen(false);
-      setADRData({ title: "", context: "", decision: "", consequences: "" });
-      await fetchSolution(projectId, solution.id);
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
+      await createADR(projectId, solution.id, adrForm);
+      setADRDialog(false);
+      setADRForm({ title: "", context: "", decision: "", consequences: "" });
+      await fetchADRs(projectId, solution.id);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleUpdateSolution = async () => {
+  // ─── 保存编辑 ADR ───
+  const handleSaveADR = async () => {
+    if (!editADRDialog) return;
     setIsSubmitting(true);
     try {
-      const payload: Record<string, unknown> = {
-        name: solutionEditData.name,
-        description: solutionEditData.description,
-        status: solutionEditData.status,
-      };
-      if (solutionEditData.recommendation.trim()) {
-        try { payload.recommendation = JSON.parse(solutionEditData.recommendation); } catch { /* 忽略 */ }
-      }
-      if (solutionEditData.quality_scores.trim()) {
-        try { payload.quality_scores = JSON.parse(solutionEditData.quality_scores); } catch { /* 忽略 */ }
-      }
-      await updateSolution(projectId, solution.id, payload);
-      setIsSolutionEditOpen(false);
-      await fetchSolution(projectId, solution.id);
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
+      await updateADR(projectId, solution.id, editADRDialog.id, {
+        title: editADRDialog.title,
+        context: editADRDialog.context,
+        decision: editADRDialog.decision,
+        consequences: editADRDialog.consequences,
+        status: editADRDialog.status,
+      });
+      setEditADRDialog(null);
+      await fetchADRs(projectId, solution.id);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeleteReview = async (reviewId: string) => {
-    if (!confirm("确认删除该评审？")) return;
-    try { await deleteReview(projectId, solution.id, reviewId); } catch { /* 静默处理 */ }
-  };
-
-  const handleReviewStatusChange = async (reviewId: string, status: string) => {
-    try { await updateReviewStatus(projectId, solution.id, reviewId, { status }); } catch { /* 静默处理 */ }
-  };
-
-  const handleEditADR = (adr: any) => {
-    setADREditData({ id: adr.id, title: adr.title || "", context: adr.context || "", decision: adr.decision || "", consequences: adr.consequences || "", status: adr.status || "proposed" });
-    setIsADREditOpen(true);
-  };
-
-  const handleUpdateADR = async () => {
+  // ─── 提交新组件 ───
+  const handleSubmitComp = async () => {
     setIsSubmitting(true);
     try {
-      const { id, ...data } = adrEditData;
-      await updateADR(projectId, solution.id, id, data);
-      setIsADREditOpen(false);
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
+      await createManagedComponent(projectId, solution.id, compForm);
+      setCompDialog(false);
+      setCompForm({ name: "", comp_type: "service", responsibility: "" });
+      await fetchManagedComponents(projectId, solution.id);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleDeleteADR = async (adrId: string) => {
-    if (!confirm("确认删除该 ADR？")) return;
-    try { await deleteADR(projectId, solution.id, adrId); } catch { /* 静默处理 */ }
-  };
-
-  const handleCreateComponent = async () => {
+  // ─── 保存编辑组件 ───
+  const handleSaveComp = async () => {
+    if (!editCompDialog) return;
     setIsSubmitting(true);
     try {
-      const payload: Record<string, unknown> = {
-        name: compCreateData.name,
-        comp_type: compCreateData.comp_type || undefined,
-        responsibility: compCreateData.responsibility || undefined,
-      };
-      if (compCreateData.interfaces.trim()) {
-        try { payload.interfaces = JSON.parse(compCreateData.interfaces); } catch { /* 忽略 */ }
-      }
-      if (compCreateData.dependencies.trim()) {
-        try { payload.dependencies = JSON.parse(compCreateData.dependencies); } catch { /* 忽略 */ }
-      }
-      await createManagedComponent(projectId, solution.id, payload);
-      setIsCompCreateOpen(false);
-      setCompCreateData({ name: "", comp_type: "", responsibility: "", interfaces: "", dependencies: "" });
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
+      await updateManagedComponent(projectId, solution.id, editCompDialog.id, {
+        name: editCompDialog.name,
+        comp_type: editCompDialog.comp_type,
+        responsibility: editCompDialog.responsibility,
+      });
+      setEditCompDialog(null);
+      await fetchManagedComponents(projectId, solution.id);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleEditComponent = (comp: any) => {
-    setCompEditData({ id: comp.id, name: comp.name || "", comp_type: comp.comp_type || "", responsibility: comp.responsibility || "", interfaces: comp.interfaces || "", dependencies: comp.dependencies || "" });
-    setIsCompEditOpen(true);
-  };
-
-  const handleUpdateComponent = async () => {
-    setIsSubmitting(true);
-    try {
-      const { id } = compEditData;
-      const payload: Record<string, unknown> = {
-        name: compEditData.name,
-        comp_type: compEditData.comp_type || undefined,
-        responsibility: compEditData.responsibility || undefined,
-      };
-      if (compEditData.interfaces.trim()) {
-        try { payload.interfaces = JSON.parse(compEditData.interfaces); } catch { /* 忽略 */ }
-      }
-      if (compEditData.dependencies.trim()) {
-        try { payload.dependencies = JSON.parse(compEditData.dependencies); } catch { /* 忽略 */ }
-      }
-      await updateManagedComponent(projectId, solution.id, id, payload);
-      setIsCompEditOpen(false);
-    } catch { /* 静默处理 */ } finally { setIsSubmitting(false); }
-  };
-
-  const handleDeleteComponent = async (componentId: string) => {
-    if (!confirm("确认删除该组件？")) return;
-    try { await deleteManagedComponent(projectId, solution.id, componentId); } catch { /* 静默处理 */ }
-  };
-
-  const openSolutionEdit = () => {
-    setSolutionEditData({
-      name: solution.name,
-      description: solution.description || "",
-      status: solution.status,
-      recommendation: solution.recommendation ? JSON.stringify(solution.recommendation, null, 2) : "",
-      quality_scores: solution.quality_scores ? JSON.stringify(solution.quality_scores, null, 2) : "",
-    });
-    setIsSolutionEditOpen(true);
-  };
-
-  const reviewStatusBadge = (status: string) => {
-    if (status === "resolved") return <Badge className="bg-green-100 text-green-800">resolved</Badge>;
-    if (status === "addressed") return <Badge className="bg-blue-100 text-blue-800">addressed</Badge>;
-    return <Badge variant="secondary">{status || "open"}</Badge>;
-  };
-
-  const adrStatusBadge = (status: string) => {
-    if (status === "accepted") return <Badge className="bg-green-100 text-green-800">accepted</Badge>;
-    if (status === "deprecated") return <Badge className="bg-red-100 text-red-800">deprecated</Badge>;
-    if (status === "superseded") return <Badge className="bg-yellow-100 text-yellow-800">superseded</Badge>;
-    return <Badge variant="secondary">{status || "proposed"}</Badge>;
+  // ─── 推进评审状态 ───
+  const handleAdvanceReview = async (reviewId: string, currentStatus: string) => {
+    const next = REVIEW_STATUS_NEXT[currentStatus];
+    if (!next) return;
+    await updateReviewStatus(projectId, solution.id, reviewId, { status: next });
+    await fetchReviews(projectId, solution.id);
   };
 
   return (
-    <Card>
+    <Card className="overflow-hidden">
+      {/* 卡片头 */}
       <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <CardTitle className="text-base">{solution.name}</CardTitle>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <CardTitle className="text-base truncate">{solution.name}</CardTitle>
               {solution.pattern && <Badge variant="outline">{solution.pattern}</Badge>}
               <Badge variant="secondary">v{solution.version}</Badge>
-              {archStats && (
-                <>
-                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-300">👍 {archStats.recommend_count}</Badge>
-                  <Badge variant="outline" className="text-xs bg-gray-50 text-gray-600 border-gray-300">👁 {archStats.view_count}</Badge>
-                  <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-300">📝 {archStats.review_count}</Badge>
-                </>
-              )}
+              <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${SOLUTION_STATUS_COLOR[solutionStatus] ?? "bg-gray-100 text-gray-600"}`}>
+                {SOLUTION_STATUS_LABELS[solutionStatus] ?? solutionStatus}
+              </span>
             </div>
-            <CardDescription>{solution.description || "AI 推荐的架构方案"}</CardDescription>
+            <CardDescription className="line-clamp-1">{solution.description || "AI 推荐的架构方案"}</CardDescription>
           </div>
-          <div className="flex items-center gap-1">
-            <Button variant="ghost" size="sm" onClick={openSolutionEdit}>
-              <Edit className="h-4 w-4" />
-            </Button>
+          <div className="flex items-center gap-1 shrink-0">
+            {SOLUTION_STATUS_NEXT[solutionStatus] && (
+              <Button variant="ghost" size="sm" onClick={handleAdvanceStatus} title="推进状态">
+                <CheckCircle className="h-4 w-4 text-green-600" />
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setExpanded(!expanded)}>
               {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
@@ -342,163 +414,159 @@ function ArchitectureDetailCard({
         </div>
       </CardHeader>
 
+      {/* 展开区域 */}
       {expanded && (
-        <CardContent className="space-y-4">
-          <Separator />
-          <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <TabsList>
-              <TabsTrigger value="overview">概览</TabsTrigger>
-              <TabsTrigger value="reviews">评审管理</TabsTrigger>
-              <TabsTrigger value="adrs">ADR 管理</TabsTrigger>
-              <TabsTrigger value="components">组件管理</TabsTrigger>
+        <CardContent className="pt-0">
+          <Separator className="mb-4" />
+          <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); loadTabData(v); }}>
+            <TabsList className="mb-4 flex-wrap h-auto">
+              <TabsTrigger value="overview" className="gap-1"><LayoutDashboard className="h-3.5 w-3.5" />概览</TabsTrigger>
+              <TabsTrigger value="components" className="gap-1"><Cpu className="h-3.5 w-3.5" />组件管理</TabsTrigger>
+              <TabsTrigger value="reviews" className="gap-1"><MessageSquare className="h-3.5 w-3.5" />评审</TabsTrigger>
+              <TabsTrigger value="adrs" className="gap-1"><FileCheck className="h-3.5 w-3.5" />ADR</TabsTrigger>
             </TabsList>
-            {/* Tab 1 - 概览 */}
+
+            {/* ── Tab 1: 概览 ── */}
             <TabsContent value="overview" className="space-y-4">
-              {qualityScores && (
+              {/* 质量属性评分 */}
+              {qualityScores && Object.keys(qualityScores).length > 0 && (
                 <div>
                   <h4 className="text-sm font-semibold mb-3 flex items-center gap-1">
                     <Star className="h-4 w-4 text-yellow-500" />质量属性评分
                   </h4>
                   <div className="grid gap-3 md:grid-cols-2">
-                    {Object.entries(qualityScores).map(([key, val]) => (
-                      <div key={key} className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">{key}</span>
-                          <span className="text-sm text-muted-foreground">{val}/100</span>
+                {Object.entries(qualityScores).map(([key, val]) => {
+                  const score = normalizeQualityScore(val);
+                  return (
+                  <div key={key} className="space-y-1">
+                    <div className="flex items-center justify-between text-sm">
+                      <span>{key}</span>
+                      <span className="text-muted-foreground">{score}/100</span>
+                    </div>
+                    <Progress value={score} className="h-2" />
+                  </div>
+                  );
+                })}
+                  </div>
+                </div>
+              )}
+
+              {/* 推荐模式 */}
+              {recommendation?.recommended_patterns && recommendation.recommended_patterns.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2">推荐架构模式</h4>
+                  <div className="space-y-2">
+                    {recommendation.recommended_patterns.map((p, i) => (
+                      <div key={i} className="rounded-md border p-3 text-sm space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{p.name}</span>
+                          {p.suitability_score !== undefined && (
+                            <Badge variant="secondary">适配度 {p.suitability_score}/100</Badge>
+                          )}
                         </div>
-                        <Progress value={val} className="h-2" />
+                        {p.reason && <p className="text-muted-foreground text-xs">{p.reason}</p>}
+                        {p.pros && p.pros.length > 0 && (
+                          <p className="text-xs text-green-700">✓ {p.pros.join(" · ")}</p>
+                        )}
+                        {p.cons && p.cons.length > 0 && (
+                          <p className="text-xs text-red-600">✗ {p.cons.join(" · ")}</p>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-              {recommendation && (
-                <>
-                  <div>
-                    <h4 className="text-sm font-semibold mb-2 flex items-center gap-1">
-                      <LayoutDashboard className="h-4 w-4 text-primary" />架构模式
-                    </h4>
-                    <p className="text-sm bg-muted rounded-md p-3">{recommendation.pattern || "未指定"}</p>
+
+              {/* AI 组件列表（来自 recommendation，只读） */}
+              {recommendation?.components && recommendation.components.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2">AI 推荐组件（只读）</h4>
+                  <div className="space-y-2">
+                    {recommendation.components.map((comp, i) => (
+                      <div key={i} className="rounded-md border p-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-medium text-sm">{comp.name}</span>
+                          <Badge variant="outline" className="text-xs">{comp.type}</Badge>
+                          {comp.technology && <Badge variant="secondary" className="text-xs">{comp.technology}</Badge>}
+                        </div>
+                        {comp.responsibility && (
+                          <p className="text-xs text-muted-foreground">{comp.responsibility}</p>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                  {recommendation.components && recommendation.components.length > 0 && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">组件列表</h4>
-                      <div className="space-y-2">
-                        {recommendation.components.map((comp, i) => (
-                          <div key={i} className="rounded-md border p-3">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="font-medium text-sm">{comp.name}</span>
-                              <Badge variant="outline" className="text-xs">{comp.type}</Badge>
-                              {comp.technology && <Badge variant="secondary" className="text-xs">{comp.technology}</Badge>}
-                            </div>
-                            <p className="text-xs text-muted-foreground">{comp.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {recommendation.rationale && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">设计依据</h4>
-                      <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{recommendation.rationale}</p>
-                    </div>
-                  )}
-                  {recommendation.trade_offs && (
-                    <div>
-                      <h4 className="text-sm font-semibold mb-2">权衡分析</h4>
-                      <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{recommendation.trade_offs}</p>
-                    </div>
-                  )}
-                </>
-              )}
-              <div className="flex gap-2 pt-2 flex-wrap">
-                <Button size="sm" variant="outline" onClick={handleGenerateDoc} disabled={isGeneratingDoc}>
-                  <FileText className="mr-2 h-4 w-4" />{isGeneratingDoc ? "生成中..." : "生成架构文档"}
-                </Button>
-                <Button size="sm" variant="outline" onClick={handleGeneratePlantuml} disabled={isGeneratingPlantuml}>
-                  <Code2 className="mr-2 h-4 w-4" />{isGeneratingPlantuml ? "生成中..." : "生成 PlantUML"}
-                </Button>
-                <Dialog open={isReviewOpen} onOpenChange={setIsReviewOpen}>
-                  <DialogTrigger render={<Button size="sm" variant="outline" />}>
-                    <MessageSquare className="mr-2 h-4 w-4" />架构评审
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>架构评审</DialogTitle>
-                      <DialogDescription>对该架构方案进行评审</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                      <div className="space-y-2">
-                        <Label>评分</Label>
-                        <Select value={String(reviewData.rating)} onValueChange={(v) => setReviewData((prev) => ({ ...prev, rating: Number(v) }))}>
-                          <SelectTrigger>
-                            <SelectValue>{reviewData.rating ? `${reviewData.rating} - ${["", "很差", "较差", "一般", "较好", "很好"][reviewData.rating]}` : undefined}</SelectValue>
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="1">1 - 很差</SelectItem>
-                            <SelectItem value="2">2 - 较差</SelectItem>
-                            <SelectItem value="3">3 - 一般</SelectItem>
-                            <SelectItem value="4">4 - 较好</SelectItem>
-                            <SelectItem value="5">5 - 很好</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-2">
-                        <Label>评审意见</Label>
-                        <Textarea placeholder="请输入评审意见" value={reviewData.comment} onChange={(e) => setReviewData((prev) => ({ ...prev, comment: e.target.value }))} rows={4} />
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setIsReviewOpen(false)}>取消</Button>
-                      <Button onClick={handleReview} disabled={isSubmitting}>{isSubmitting ? "提交中..." : "提交评审"}</Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Dialog open={isADROpen} onOpenChange={setIsADROpen}>
-                  <DialogTrigger render={<Button size="sm" variant="outline" />}>
-                    <FileCheck className="mr-2 h-4 w-4" />创建 ADR
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>创建架构决策记录 (ADR)</DialogTitle>
-                      <DialogDescription>记录重要的架构决策及其背景</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                      <div className="space-y-2">
-                        <Label>标题</Label>
-                        <Input placeholder="ADR 标题" value={adrData.title} onChange={(e) => setADRData((prev) => ({ ...prev, title: e.target.value }))} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>背景 (Context)</Label>
-                        <Textarea placeholder="描述决策的背景和驱动力" value={adrData.context} onChange={(e) => setADRData((prev) => ({ ...prev, context: e.target.value }))} rows={3} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>决策 (Decision)</Label>
-                        <Textarea placeholder="描述做出的决策" value={adrData.decision} onChange={(e) => setADRData((prev) => ({ ...prev, decision: e.target.value }))} rows={3} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>后果 (Consequences)</Label>
-                        <Textarea placeholder="描述决策带来的后果（选填）" value={adrData.consequences} onChange={(e) => setADRData((prev) => ({ ...prev, consequences: e.target.value }))} rows={2} />
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setIsADROpen(false)}>取消</Button>
-                      <Button onClick={handleADR} disabled={isSubmitting}>{isSubmitting ? "创建中..." : "创建 ADR"}</Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </div>
-              {localArchDoc && (
-                <div className="space-y-2 pt-2" data-color-mode="light">
-                  <h4 className="text-sm font-semibold flex items-center gap-1"><FileText className="h-4 w-4 text-primary" />架构文档</h4>
-                  <div className="rounded-md border p-3 max-h-[400px] overflow-auto"><MDEditor.Markdown source={localArchDoc} /></div>
                 </div>
               )}
+
+              {/* 技术栈 */}
+              {recommendation?.tech_stack && Object.keys(recommendation.tech_stack).length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2">技术栈推荐</h4>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {Object.entries(recommendation.tech_stack).map(([layer, techs]) => (
+                      <div key={layer} className="rounded-md border p-2 text-xs">
+                        <span className="font-medium text-muted-foreground">{layer}: </span>
+                        {Array.isArray(techs) ? techs.join(", ") : String(techs)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 设计依据 & 权衡 */}
+              {recommendation?.rationale && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-1">设计依据</h4>
+                  <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{recommendation.rationale}</p>
+                </div>
+              )}
+              {recommendation?.trade_offs && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-1">权衡分析</h4>
+                  <p className="text-sm text-muted-foreground bg-muted rounded-md p-3">{recommendation.trade_offs}</p>
+                </div>
+              )}
+
+              {/* 操作按钮 */}
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button size="sm" variant="outline" onClick={handleGenerateDoc} disabled={isGeneratingDoc}>
+                  <FileText className="mr-1.5 h-4 w-4" />
+                  {isGeneratingDoc ? "生成中..." : "生成架构文档"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleGeneratePlantuml} disabled={isGeneratingPlantuml}>
+                  <Code2 className="mr-1.5 h-4 w-4" />
+                  {isGeneratingPlantuml ? "生成中..." : "生成 PlantUML"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleAIReview} disabled={isAIReviewing}>
+                  <Sparkles className="mr-1.5 h-4 w-4 text-purple-500" />
+                  {isAIReviewing ? "评审中..." : "AI 架构评审"}
+                </Button>
+              </div>
+
+              {/* 生成的架构文档 */}
+              {localArchDoc && (
+                <div className="space-y-2 pt-2" data-color-mode="light">
+                  <h4 className="text-sm font-semibold flex items-center gap-1">
+                    <FileText className="h-4 w-4 text-primary" />架构文档
+                  </h4>
+                  <div className="rounded-md border p-3 max-h-[400px] overflow-auto">
+                    <MDEditor.Markdown source={localArchDoc} />
+                  </div>
+                </div>
+              )}
+
+              {/* PlantUML 图 */}
               {localPlantuml && (
                 <div className="space-y-2 pt-2">
-                  <h4 className="text-sm font-semibold flex items-center gap-1"><ImageIcon className="h-4 w-4 text-primary" />PlantUML 架构图</h4>
-                  <div className="rounded-md border p-3 bg-white">
-                    <img src={`http://www.plantuml.com/plantuml/img/${plantumlEncode(localPlantuml)}`} alt="Architecture Diagram" className="max-w-full" />
+                  <h4 className="text-sm font-semibold flex items-center gap-1">
+                    <ImageIcon className="h-4 w-4 text-primary" />PlantUML 架构图
+                  </h4>
+                  <div className="rounded-md border p-3 bg-white overflow-auto">
+                    <img
+                      src={`http://www.plantuml.com/plantuml/img/${plantumlEncode(localPlantuml)}`}
+                      alt="Architecture Diagram"
+                      className="max-w-full"
+                    />
                   </div>
                   <details className="text-xs">
                     <summary className="cursor-pointer text-muted-foreground">查看 PlantUML 源码</summary>
@@ -507,258 +575,519 @@ function ArchitectureDetailCard({
                 </div>
               )}
             </TabsContent>
-            {/* Tab 2 - 评审管理 */}
-            <TabsContent value="reviews" className="space-y-4">
+
+            {/* ── Tab 2: 组件管理 ── */}
+            <TabsContent value="components" className="space-y-3">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-semibold">评审列表</h4>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="default" onClick={handleAiReview} disabled={isAiReviewing}>
-                    {isAiReviewing ? (
-                      <><span className="mr-2 h-4 w-4 inline-block animate-spin rounded-full border-2 border-white border-t-transparent" />AI评审中...</>
-                    ) : (
-                      <>🤖 AI智能评审</>
-                    )}
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => fetchReviews(projectId, solution.id)}><RefreshCw className="h-4 w-4" /></Button>
-                </div>
+                <h4 className="text-sm font-semibold flex items-center gap-1">
+                  <Cpu className="h-4 w-4" />可编辑组件（共 {localComponents.length} 个）
+                </h4>
+                <Button size="sm" onClick={() => setCompDialog(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />添加组件
+                </Button>
               </div>
-              {aiReviewError && (
-                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{aiReviewError}</div>
-              )}
-              {aiReviewResult && (
-                <div className="rounded-md border border-primary/30 bg-primary/5 p-4 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h5 className="text-sm font-semibold flex items-center gap-2">🤖 AI 评审结果</h5>
-                    {aiReviewResult.overall_rating != null && (
-                      <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300">
-                        ⭐ {aiReviewResult.overall_rating}/10
-                      </Badge>
-                    )}
-                  </div>
-                  {aiReviewResult.summary && (
-                    <div className="rounded-md bg-blue-50 border border-blue-200 p-3">
-                      <p className="text-sm font-medium text-blue-800">{aiReviewResult.summary}</p>
-                    </div>
-                  )}
-                  {aiReviewResult.quality_assessment && (
-                    <div>
-                      <p className="text-xs font-semibold mb-2 text-muted-foreground">五维度质量评估</p>
-                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                        {Object.entries(aiReviewResult.quality_assessment as Record<string, any>).map(([key, val]) => (
-                          <div key={key} className="rounded-md border p-2 text-center">
-                            <p className="text-xs text-muted-foreground">{key}</p>
-                            <p className="text-sm font-semibold">{typeof val === 'object' ? (val as any)?.score ?? JSON.stringify(val) : String(val)}</p>
-                          </div>
-                        ))}
+              {localComponents.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm border rounded-md">
+                  暂无组件，点击"添加组件"新增
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {localComponents.map((comp) => (
+                    <div key={comp.id} className="border rounded-md p-3 flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="font-medium text-sm">{comp.name}</span>
+                          <Badge variant="outline" className="text-xs">{comp.comp_type}</Badge>
+                        </div>
+                        {comp.responsibility && (
+                          <p className="text-xs text-muted-foreground line-clamp-2">{comp.responsibility}</p>
+                        )}
+                      </div>
+                      <div className="flex gap-1 shrink-0">
+                        <Button variant="ghost" size="sm" onClick={() => setEditCompDialog({ ...comp })}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setConfirmDeleteComp(comp.id)}
+                          className="text-destructive hover:text-destructive">
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       </div>
                     </div>
-                  )}
-                  {aiReviewResult.defects && (aiReviewResult.defects as any[]).length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold mb-1 text-red-700">缺陷列表</p>
-                      <ul className="space-y-1">
-                        {(aiReviewResult.defects as any[]).map((d: any, i: number) => (
-                          <li key={i} className="text-xs text-red-600 bg-red-50 border border-red-200 rounded p-2">
-                            {typeof d === 'string' ? d : d.description || JSON.stringify(d)}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {aiReviewResult.suggestions && (aiReviewResult.suggestions as any[]).length > 0 && (
-                    <div>
-                      <p className="text-xs font-semibold mb-1 text-blue-700">改进建议</p>
-                      <ul className="space-y-1">
-                        {(aiReviewResult.suggestions as any[]).map((s: any, i: number) => (
-                          <li key={i} className="text-xs text-blue-600 bg-blue-50 border border-blue-200 rounded p-2">
-                            {typeof s === 'string' ? s : s.description || JSON.stringify(s)}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  ))}
                 </div>
               )}
-              {reviews.length === 0 && !aiReviewResult ? (
-                <p className="text-sm text-muted-foreground text-center py-6">暂无评审记录</p>
-              ) : reviews.length > 0 ? (
-                <Table>
-                  <TableHeader><TableRow><TableHead>评审内容</TableHead><TableHead>评分</TableHead><TableHead>状态</TableHead><TableHead>来源</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
-                  <TableBody>
-                    {reviews.map((r: any) => (
-                      <TableRow key={r.id}>
-                        <TableCell className="max-w-[200px] truncate">{r.comment}</TableCell>
-                        <TableCell>{r.rating}/5</TableCell>
-                        <TableCell>
-                          <Select value={r.status || "open"} onValueChange={(v) => handleReviewStatusChange(r.id, v)}>
-                            <SelectTrigger className="w-[130px] h-8"><SelectValue>{reviewStatusBadge(r.status || "open")}</SelectValue></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="open">open</SelectItem>
-                              <SelectItem value="addressed">addressed</SelectItem>
-                              <SelectItem value="resolved">resolved</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          {r.reviewer_id === "ai" || r.comment?.startsWith("[AI") ? (
-                            <Badge className="bg-purple-100 text-purple-800 border-purple-300 text-xs">AI</Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-xs">人工</Badge>
-                          )}
-                        </TableCell>
-                        <TableCell><Button size="sm" variant="ghost" onClick={() => handleDeleteReview(r.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button></TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : null}
             </TabsContent>
-            {/* Tab 3 - ADR 管理 */}
-            <TabsContent value="adrs" className="space-y-4">
+
+            {/* ── Tab 3: 评审 ── */}
+            <TabsContent value="reviews" className="space-y-3">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-semibold">ADR 列表</h4>
-                <Button size="sm" variant="ghost" onClick={() => fetchADRs(projectId, solution.id)}><RefreshCw className="h-4 w-4" /></Button>
-              </div>
-              {adrs.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-6">暂无 ADR 记录</p>
-              ) : (
-                <Table>
-                  <TableHeader><TableRow><TableHead>标题</TableHead><TableHead>状态</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
-                  <TableBody>
-                    {adrs.map((adr: any) => (
-                      <TableRow key={adr.id}>
-                        <TableCell>{adr.title}</TableCell>
-                        <TableCell>{adrStatusBadge(adr.status || "proposed")}</TableCell>
-                        <TableCell className="flex gap-1">
-                          <Button size="sm" variant="ghost" onClick={() => handleEditADR(adr)}><Edit className="h-4 w-4" /></Button>
-                          <Button size="sm" variant="ghost" onClick={() => handleDeleteADR(adr.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </TabsContent>
-            {/* Tab 4 - 组件管理 */}
-            <TabsContent value="components" className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-sm font-semibold">组件列表</h4>
+                <h4 className="text-sm font-semibold flex items-center gap-1">
+                  <MessageSquare className="h-4 w-4" />评审记录（共 {localReviews.length} 条）
+                </h4>
                 <div className="flex gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => fetchManagedComponents(projectId, solution.id)}><RefreshCw className="h-4 w-4" /></Button>
-                  <Button size="sm" onClick={() => setIsCompCreateOpen(true)}><Plus className="mr-1 h-4 w-4" />新建组件</Button>
+                  <Button size="sm" variant="outline" onClick={handleAIReview} disabled={isAIReviewing}>
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5 text-purple-500" />
+                    {isAIReviewing ? "评审中..." : "AI评审"}
+                  </Button>
+                  <Button size="sm" onClick={() => setReviewDialog(true)}>
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />提交评审
+                  </Button>
                 </div>
               </div>
-              {managedComponents.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-6">暂无组件记录</p>
+              {localReviews.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm border rounded-md">
+                  暂无评审记录
+                </div>
               ) : (
-                <Table>
-                  <TableHeader><TableRow><TableHead>名称</TableHead><TableHead>类型</TableHead><TableHead>职责</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
-                  <TableBody>
-                    {managedComponents.map((comp: any) => (
-                      <TableRow key={comp.id}>
-                        <TableCell>{comp.name}</TableCell>
-                        <TableCell><Badge variant="outline">{comp.comp_type}</Badge></TableCell>
-                        <TableCell className="max-w-[200px] truncate">{comp.responsibility}</TableCell>
-                        <TableCell className="flex gap-1">
-                          <Button size="sm" variant="ghost" onClick={() => handleEditComponent(comp)}><Edit className="h-4 w-4" /></Button>
-                          <Button size="sm" variant="ghost" onClick={() => handleDeleteComponent(comp.id)}><Trash2 className="h-4 w-4 text-red-500" /></Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <div className="space-y-2">
+                  {localReviews.map((review) => (
+                    <div key={review.id} className="border rounded-md p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
+                          <div className="flex">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <Star key={i} className={`h-3.5 w-3.5 ${i < review.rating ? "text-yellow-400 fill-yellow-400" : "text-gray-200 fill-gray-200"}`} />
+                            ))}
+                          </div>
+                          <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${REVIEW_STATUS_COLOR[review.status] ?? "bg-gray-100 text-gray-600"}`}>
+                            {REVIEW_STATUS_LABELS[review.status] ?? review.status}
+                          </span>
+                        </div>
+                        <div className="flex gap-1">
+                          {REVIEW_STATUS_NEXT[review.status] && (
+                            <Button variant="ghost" size="sm" title="推进状态"
+                              onClick={() => handleAdvanceReview(review.id, review.status)}>
+                              <RefreshCw className="h-3.5 w-3.5 text-blue-500" />
+                            </Button>
+                          )}
+                          <Button variant="ghost" size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setConfirmDeleteReview(review.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      <p className="text-sm text-muted-foreground">{review.comment}</p>
+                      {review.created_at && (
+                        <p className="text-xs text-muted-foreground/60">
+                          {new Date(review.created_at).toLocaleString("zh-CN")}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* ── Tab 4: ADR ── */}
+            <TabsContent value="adrs" className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-semibold flex items-center gap-1">
+                  <FileCheck className="h-4 w-4" />架构决策记录（共 {localADRs.length} 条）
+                </h4>
+                <Button size="sm" onClick={() => setADRDialog(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />创建 ADR
+                </Button>
+              </div>
+              {localADRs.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm border rounded-md">
+                  暂无架构决策记录
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {localADRs.map((adr) => (
+                    <div key={adr.id} className="border rounded-md p-3 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-medium text-sm">{adr.title}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${ADR_STATUS_COLOR[adr.status] ?? "bg-gray-100 text-gray-600"}`}>
+                            {ADR_STATUS_LABELS[adr.status] ?? adr.status}
+                          </span>
+                        </div>
+                        <div className="flex gap-1 shrink-0">
+                          <Button variant="ghost" size="sm" onClick={() => setEditADRDialog({ ...adr })}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setConfirmDeleteADR(adr.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="text-xs space-y-1 text-muted-foreground">
+                        <p><span className="font-medium text-foreground">背景：</span>{adr.context}</p>
+                        <p><span className="font-medium text-foreground">决策：</span>{adr.decision}</p>
+                        {adr.consequences && (
+                          <p><span className="font-medium text-foreground">后果：</span>{adr.consequences}</p>
+                        )}
+                      </div>
+                      {adr.created_at && (
+                        <p className="text-xs text-muted-foreground/60">
+                          {new Date(adr.created_at).toLocaleString("zh-CN")}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </TabsContent>
           </Tabs>
         </CardContent>
       )}
-      {/* Solution 编辑 Dialog */}
-      <Dialog open={isSolutionEditOpen} onOpenChange={setIsSolutionEditOpen}>
+
+      {/* ───────────── Dialogs ───────────── */}
+
+      {/* 提交评审 */}
+      <Dialog open={reviewDialog} onOpenChange={setReviewDialog}>
         <DialogContent>
-          <DialogHeader><DialogTitle>编辑方案</DialogTitle><DialogDescription>修改架构方案信息</DialogDescription></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2"><Label>方案名称</Label><Input value={solutionEditData.name} onChange={(e) => setSolutionEditData((prev) => ({ ...prev, name: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>描述</Label><Textarea value={solutionEditData.description} onChange={(e) => setSolutionEditData((prev) => ({ ...prev, description: e.target.value }))} rows={3} /></div>
+          <DialogHeader>
+            <DialogTitle>提交架构评审</DialogTitle>
+            <DialogDescription>对方案 "{solution.name}" 进行人工评审</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
             <div className="space-y-2">
-              <Label>状态</Label>
-              <Select value={solutionEditData.status} onValueChange={(v) => { if (v) setSolutionEditData((prev) => ({ ...prev, status: v })); }}>
+              <Label>评分（1-5）</Label>
+              <Select value={String(reviewForm.rating)}
+                onValueChange={(v) => setReviewForm((p) => ({ ...p, rating: Number(v) }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="proposed">proposed</SelectItem>
-                  <SelectItem value="selected">selected</SelectItem>
-                  <SelectItem value="reviewed">reviewed</SelectItem>
-                  <SelectItem value="confirmed">confirmed</SelectItem>
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <SelectItem key={n} value={String(n)}>{n} — {["", "很差", "较差", "一般", "较好", "很好"][n]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2"><Label>推荐结果（JSON）</Label><Textarea value={solutionEditData.recommendation} onChange={(e) => setSolutionEditData((prev) => ({ ...prev, recommendation: e.target.value }))} rows={4} placeholder='{"pattern": "...", "components": [...]}' /></div>
-            <div className="space-y-2"><Label>质量评分（JSON）</Label><Textarea value={solutionEditData.quality_scores} onChange={(e) => setSolutionEditData((prev) => ({ ...prev, quality_scores: e.target.value }))} rows={4} placeholder='{"性能": 80, "安全性": 90}' /></div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsSolutionEditOpen(false)}>取消</Button>
-            <Button onClick={handleUpdateSolution} disabled={isSubmitting}>{isSubmitting ? "保存中..." : "保存"}</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      {/* ADR 编辑 Dialog */}
-      <Dialog open={isADREditOpen} onOpenChange={setIsADREditOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>编辑 ADR</DialogTitle><DialogDescription>修改架构决策记录</DialogDescription></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2"><Label>标题</Label><Input value={adrEditData.title} onChange={(e) => setADREditData((prev) => ({ ...prev, title: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>背景 (Context)</Label><Textarea value={adrEditData.context} onChange={(e) => setADREditData((prev) => ({ ...prev, context: e.target.value }))} rows={3} /></div>
-            <div className="space-y-2"><Label>决策 (Decision)</Label><Textarea value={adrEditData.decision} onChange={(e) => setADREditData((prev) => ({ ...prev, decision: e.target.value }))} rows={3} /></div>
-            <div className="space-y-2"><Label>后果 (Consequences)</Label><Textarea value={adrEditData.consequences} onChange={(e) => setADREditData((prev) => ({ ...prev, consequences: e.target.value }))} rows={2} /></div>
             <div className="space-y-2">
-              <Label>状态</Label>
-              <Select value={adrEditData.status} onValueChange={(v) => { if (v) setADREditData((prev) => ({ ...prev, status: v })); }}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="proposed">proposed</SelectItem>
-                  <SelectItem value="accepted">accepted</SelectItem>
-                  <SelectItem value="deprecated">deprecated</SelectItem>
-                  <SelectItem value="superseded">superseded</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>评审意见</Label>
+              <Textarea placeholder="请输入评审意见..." rows={4}
+                value={reviewForm.comment}
+                onChange={(e) => setReviewForm((p) => ({ ...p, comment: e.target.value }))} />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsADREditOpen(false)}>取消</Button>
-            <Button onClick={handleUpdateADR} disabled={isSubmitting}>{isSubmitting ? "保存中..." : "保存"}</Button>
+            <Button variant="outline" onClick={() => setReviewDialog(false)}>取消</Button>
+            <Button onClick={handleSubmitReview} disabled={isSubmitting || !reviewForm.comment}>
+              {isSubmitting ? "提交中..." : "提交评审"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {/* 组件创建 Dialog */}
-      <Dialog open={isCompCreateOpen} onOpenChange={setIsCompCreateOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>新建组件</DialogTitle><DialogDescription>添加新的架构组件</DialogDescription></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2"><Label>名称</Label><Input value={compCreateData.name} onChange={(e) => setCompCreateData((prev) => ({ ...prev, name: e.target.value }))} placeholder="组件名称" /></div>
-            <div className="space-y-2"><Label>类型</Label><Input value={compCreateData.comp_type} onChange={(e) => setCompCreateData((prev) => ({ ...prev, comp_type: e.target.value }))} placeholder="如: service, module, layer" /></div>
-            <div className="space-y-2"><Label>职责</Label><Textarea value={compCreateData.responsibility} onChange={(e) => setCompCreateData((prev) => ({ ...prev, responsibility: e.target.value }))} rows={2} placeholder="组件职责描述" /></div>
-            <div className="space-y-2"><Label>接口</Label><Textarea value={compCreateData.interfaces} onChange={(e) => setCompCreateData((prev) => ({ ...prev, interfaces: e.target.value }))} rows={2} placeholder="提供的接口（选填）" /></div>
-            <div className="space-y-2"><Label>依赖</Label><Textarea value={compCreateData.dependencies} onChange={(e) => setCompCreateData((prev) => ({ ...prev, dependencies: e.target.value }))} rows={2} placeholder="依赖的其他组件（选填）" /></div>
+
+      {/* 创建 ADR */}
+      <Dialog open={adrDialog} onOpenChange={setADRDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>创建架构决策记录 (ADR)</DialogTitle>
+            <DialogDescription>记录重要的架构决策及其背景</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label>标题</Label>
+              <Input placeholder="ADR 标题" value={adrForm.title}
+                onChange={(e) => setADRForm((p) => ({ ...p, title: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>背景 (Context)</Label>
+              <Textarea placeholder="描述决策的背景和驱动力" rows={3} value={adrForm.context}
+                onChange={(e) => setADRForm((p) => ({ ...p, context: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>决策 (Decision)</Label>
+              <Textarea placeholder="描述做出的决策" rows={3} value={adrForm.decision}
+                onChange={(e) => setADRForm((p) => ({ ...p, decision: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>后果 (Consequences)</Label>
+              <Textarea placeholder="描述决策带来的后果（选填）" rows={2} value={adrForm.consequences}
+                onChange={(e) => setADRForm((p) => ({ ...p, consequences: e.target.value }))} />
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCompCreateOpen(false)}>取消</Button>
-            <Button onClick={handleCreateComponent} disabled={isSubmitting}>{isSubmitting ? "创建中..." : "创建"}</Button>
+            <Button variant="outline" onClick={() => setADRDialog(false)}>取消</Button>
+            <Button onClick={handleSubmitADR}
+              disabled={isSubmitting || !adrForm.title || !adrForm.context || !adrForm.decision}>
+              {isSubmitting ? "创建中..." : "创建 ADR"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {/* 组件编辑 Dialog */}
-      <Dialog open={isCompEditOpen} onOpenChange={setIsCompEditOpen}>
+
+      {/* 编辑 ADR */}
+      <Dialog open={!!editADRDialog} onOpenChange={(o) => { if (!o) setEditADRDialog(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>编辑 ADR</DialogTitle>
+          </DialogHeader>
+          {editADRDialog && (
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <Label>标题</Label>
+                <Input value={editADRDialog.title}
+                  onChange={(e) => setEditADRDialog((p) => p ? { ...p, title: e.target.value } : p)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>状态</Label>
+                <Select value={editADRDialog.status}
+                  onValueChange={(v) => setEditADRDialog((p) => p ? { ...p, status: v } : p)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {Object.entries(ADR_STATUS_LABELS).map(([v, l]) => (
+                      <SelectItem key={v} value={v}>{l}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>背景</Label>
+                <Textarea rows={3} value={editADRDialog.context}
+                  onChange={(e) => setEditADRDialog((p) => p ? { ...p, context: e.target.value } : p)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>决策</Label>
+                <Textarea rows={3} value={editADRDialog.decision}
+                  onChange={(e) => setEditADRDialog((p) => p ? { ...p, decision: e.target.value } : p)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>后果</Label>
+                <Textarea rows={2} value={editADRDialog.consequences ?? ""}
+                  onChange={(e) => setEditADRDialog((p) => p ? { ...p, consequences: e.target.value } : p)} />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditADRDialog(null)}>取消</Button>
+            <Button onClick={handleSaveADR} disabled={isSubmitting}>
+              {isSubmitting ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 添加组件 */}
+      <Dialog open={compDialog} onOpenChange={setCompDialog}>
         <DialogContent>
-          <DialogHeader><DialogTitle>编辑组件</DialogTitle><DialogDescription>修改组件信息</DialogDescription></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2"><Label>名称</Label><Input value={compEditData.name} onChange={(e) => setCompEditData((prev) => ({ ...prev, name: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>类型</Label><Input value={compEditData.comp_type} onChange={(e) => setCompEditData((prev) => ({ ...prev, comp_type: e.target.value }))} /></div>
-            <div className="space-y-2"><Label>职责</Label><Textarea value={compEditData.responsibility} onChange={(e) => setCompEditData((prev) => ({ ...prev, responsibility: e.target.value }))} rows={2} /></div>
-            <div className="space-y-2"><Label>接口</Label><Textarea value={compEditData.interfaces} onChange={(e) => setCompEditData((prev) => ({ ...prev, interfaces: e.target.value }))} rows={2} /></div>
-            <div className="space-y-2"><Label>依赖</Label><Textarea value={compEditData.dependencies} onChange={(e) => setCompEditData((prev) => ({ ...prev, dependencies: e.target.value }))} rows={2} /></div>
+          <DialogHeader>
+            <DialogTitle>添加架构组件</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="space-y-1.5">
+              <Label>组件名称</Label>
+              <Input placeholder="如：API 网关、用户服务..." value={compForm.name}
+                onChange={(e) => setCompForm((p) => ({ ...p, name: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>组件类型</Label>
+              <Select value={compForm.comp_type}
+                onValueChange={(v) => setCompForm((p) => ({ ...p, comp_type: v }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {["service", "gateway", "database", "cache", "frontend", "backend", "middleware", "queue", "other"].map((t) => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>职责描述</Label>
+              <Textarea placeholder="描述该组件的职责..." rows={3} value={compForm.responsibility}
+                onChange={(e) => setCompForm((p) => ({ ...p, responsibility: e.target.value }))} />
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCompEditOpen(false)}>取消</Button>
-            <Button onClick={handleUpdateComponent} disabled={isSubmitting}>{isSubmitting ? "保存中..." : "保存"}</Button>
+            <Button variant="outline" onClick={() => setCompDialog(false)}>取消</Button>
+            <Button onClick={handleSubmitComp} disabled={isSubmitting || !compForm.name}>
+              {isSubmitting ? "添加中..." : "添加"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 编辑组件 */}
+      <Dialog open={!!editCompDialog} onOpenChange={(o) => { if (!o) setEditCompDialog(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>编辑组件</DialogTitle>
+          </DialogHeader>
+          {editCompDialog && (
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <Label>组件名称</Label>
+                <Input value={editCompDialog.name}
+                  onChange={(e) => setEditCompDialog((p) => p ? { ...p, name: e.target.value } : p)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>组件类型</Label>
+                <Select value={editCompDialog.comp_type}
+                  onValueChange={(v) => setEditCompDialog((p) => p ? { ...p, comp_type: v } : p)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {["service", "gateway", "database", "cache", "frontend", "backend", "middleware", "queue", "other"].map((t) => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>职责描述</Label>
+                <Textarea rows={3} value={editCompDialog.responsibility ?? ""}
+                  onChange={(e) => setEditCompDialog((p) => p ? { ...p, responsibility: e.target.value } : p)} />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditCompDialog(null)}>取消</Button>
+            <Button onClick={handleSaveComp} disabled={isSubmitting}>
+              {isSubmitting ? "保存中..." : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI 评审结果 */}
+      <Dialog open={aiReviewDialog} onOpenChange={setAIReviewDialog}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-500" />AI 架构评审报告
+            </DialogTitle>
+            <DialogDescription>方案：{solution.name}</DialogDescription>
+          </DialogHeader>
+          {aiReviewResult && (
+            <div className="space-y-4 py-2">
+              {/* 总评分 */}
+              <div className="flex items-center gap-4 p-4 rounded-lg bg-muted">
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-primary">{aiReviewResult.overall_rating}</div>
+                  <div className="text-xs text-muted-foreground">综合评分/10</div>
+                </div>
+                <div className="flex-1">
+                  <Progress value={(aiReviewResult.overall_rating / 10) * 100} className="h-3 mb-1" />
+                  <p className="text-sm">{aiReviewResult.summary}</p>
+                </div>
+              </div>
+
+              {/* 质量属性评估 */}
+              {aiReviewResult.quality_assessment && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1">
+                    <Star className="h-4 w-4 text-yellow-500" />质量属性评估
+                  </h4>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {Object.entries(aiReviewResult.quality_assessment).map(([key, val]) => (
+                      <div key={key} className="border rounded p-2 text-xs">
+                        <span className="font-medium">{key}: </span>
+                        <span className="text-muted-foreground">{String(val)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 模式适配性 */}
+              {aiReviewResult.pattern_fitness && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2">架构模式适配性</h4>
+                  <div className="border rounded p-3 text-sm space-y-1">
+                    {Object.entries(aiReviewResult.pattern_fitness).map(([k, v]) => (
+                      <div key={k}><span className="font-medium">{k}: </span>{String(v)}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 缺陷 */}
+              {aiReviewResult.defects && aiReviewResult.defects.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1 text-red-600">
+                    <AlertTriangle className="h-4 w-4" />发现缺陷（{aiReviewResult.defects.length} 项）
+                  </h4>
+                  <div className="space-y-1">
+                    {aiReviewResult.defects.map((d, i) => (
+                      <div key={i} className="text-sm border border-red-200 bg-red-50 rounded p-2">
+                        {typeof d === "object" ? JSON.stringify(d) : String(d)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* 改进建议 */}
+              {aiReviewResult.suggestions && aiReviewResult.suggestions.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-semibold mb-2 flex items-center gap-1 text-blue-600">
+                    <Eye className="h-4 w-4" />改进建议（{aiReviewResult.suggestions.length} 条）
+                  </h4>
+                  <div className="space-y-1">
+                    {aiReviewResult.suggestions.map((s, i) => (
+                      <div key={i} className="text-sm border border-blue-200 bg-blue-50 rounded p-2">
+                        {typeof s === "object" ? JSON.stringify(s) : String(s)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button onClick={() => setAIReviewDialog(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除评审确认 */}
+      <Dialog open={!!confirmDeleteReview} onOpenChange={(o) => { if (!o) setConfirmDeleteReview(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除评审？</DialogTitle>
+            <DialogDescription>该操作不可撤销。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDeleteReview(null)}>取消</Button>
+            <Button variant="destructive" onClick={async () => {
+              if (!confirmDeleteReview) return;
+              await deleteReview(projectId, solution.id, confirmDeleteReview);
+              await fetchReviews(projectId, solution.id);
+              setConfirmDeleteReview(null);
+            }}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除 ADR 确认 */}
+      <Dialog open={!!confirmDeleteADR} onOpenChange={(o) => { if (!o) setConfirmDeleteADR(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除 ADR？</DialogTitle>
+            <DialogDescription>该操作不可撤销。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDeleteADR(null)}>取消</Button>
+            <Button variant="destructive" onClick={async () => {
+              if (!confirmDeleteADR) return;
+              await deleteADR(projectId, solution.id, confirmDeleteADR);
+              await fetchADRs(projectId, solution.id);
+              setConfirmDeleteADR(null);
+            }}>删除</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除组件确认 */}
+      <Dialog open={!!confirmDeleteComp} onOpenChange={(o) => { if (!o) setConfirmDeleteComp(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除组件？</DialogTitle>
+            <DialogDescription>删除后关联的追溯链接也将被同步删除。</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDeleteComp(null)}>取消</Button>
+            <Button variant="destructive" onClick={async () => {
+              if (!confirmDeleteComp) return;
+              await deleteManagedComponent(projectId, solution.id, confirmDeleteComp);
+              await fetchManagedComponents(projectId, solution.id);
+              setConfirmDeleteComp(null);
+            }}>删除</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -766,14 +1095,19 @@ function ArchitectureDetailCard({
   );
 }
 
+// ─────────────────────────── 主页面 ───────────────────────────
+
 export default function ArchitecturesPage() {
   const searchParams = useSearchParams();
   const projectIdFromUrl = searchParams.get("projectId");
+
   const { projects, fetchProjects } = useProjectStore();
   const { solutions, isRecommending, fetchSolutions, recommendArchitecture, autoMapTraceability } = useArchitectureStore();
+
   const [selectedProjectId, setSelectedProjectId] = useState(projectIdFromUrl || "");
   const [selectedAttributes, setSelectedAttributes] = useState<string[]>([]);
-  const [isRecommendingOpen, setIsRecommendingOpen] = useState(false);
+  const [recommendOpen, setRecommendOpen] = useState(false);
+  const [isMappingTraceability, setIsMappingTraceability] = useState(false);
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
   useEffect(() => { if (projectIdFromUrl) setSelectedProjectId(projectIdFromUrl); }, [projectIdFromUrl]);
@@ -781,77 +1115,100 @@ export default function ArchitecturesPage() {
 
   const handleRecommend = async () => {
     if (!selectedProjectId) return;
-    await recommendArchitecture(selectedProjectId, { quality_attributes: selectedAttributes.length > 0 ? selectedAttributes : undefined });
-    setIsRecommendingOpen(false);
+    await recommendArchitecture(selectedProjectId, {
+      quality_attributes: selectedAttributes.length > 0 ? selectedAttributes : undefined,
+    });
+    setRecommendOpen(false);
+    setSelectedAttributes([]);
   };
 
-  const handleTraceability = async () => {
+  const handleAutoMap = async () => {
     if (!selectedProjectId) return;
-    await autoMapTraceability(selectedProjectId);
+    setIsMappingTraceability(true);
+    try {
+      await autoMapTraceability(selectedProjectId);
+    } finally {
+      setIsMappingTraceability(false);
+    }
   };
 
-  const toggleAttribute = (attr: string) => {
+  const toggleAttr = (attr: string) =>
     setSelectedAttributes((prev) => prev.includes(attr) ? prev.filter((a) => a !== attr) : [...prev, attr]);
-  };
 
   return (
     <div className="flex flex-col h-full">
       <AppHeader title="架构设计" />
       <main className="flex-1 overflow-auto p-6 space-y-6">
+
+        {/* 项目选择 + 操作栏 */}
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div className="flex items-center gap-4 flex-1">
-            <Label className="whitespace-nowrap">选择项目</Label>
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            <Label className="whitespace-nowrap shrink-0">选择项目</Label>
             <Select value={selectedProjectId} onValueChange={(v) => setSelectedProjectId(v ?? "")}>
-              <SelectTrigger className="w-[300px]">
-                <SelectValue placeholder="请选择项目">{selectedProjectId ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId : undefined}</SelectValue>
+              <SelectTrigger className="w-[280px]">
+                <SelectValue placeholder="请选择项目">
+                  {selectedProjectId
+                    ? projects.find((p) => p.id === selectedProjectId)?.name ?? selectedProjectId
+                    : undefined}
+                </SelectValue>
               </SelectTrigger>
-              <SelectContent>{projects.map((p) => (<SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>))}</SelectContent>
+              <SelectContent>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </div>
           {selectedProjectId && (
-            <div className="flex items-center gap-2">
-              <Button size="sm" onClick={() => setIsRecommendingOpen(true)} disabled={isRecommending}>
-                <BrainCircuit className="mr-2 h-4 w-4" />{isRecommending ? "推荐中..." : "AI 架构推荐"}
+            <div className="flex gap-2 flex-wrap">
+              <Button size="sm" onClick={() => setRecommendOpen(true)} disabled={isRecommending}>
+                <BrainCircuit className="mr-1.5 h-4 w-4" />
+                {isRecommending ? "推荐中..." : "AI 架构推荐"}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleTraceability}>
-                <GitBranch className="mr-2 h-4 w-4" />追溯映射
+              <Button size="sm" variant="outline" onClick={handleAutoMap} disabled={isMappingTraceability}>
+                <GitBranch className="mr-1.5 h-4 w-4" />
+                {isMappingTraceability ? "映射中..." : "AI 追溯映射"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => fetchSolutions(selectedProjectId)}>
+                <RefreshCw className="mr-1.5 h-4 w-4" />刷新
               </Button>
             </div>
           )}
         </div>
+
+        {/* 推荐进度提示 */}
         {isRecommending && (
           <Card className="border-primary/20 bg-primary/5">
-            <CardContent className="py-4">
-              <div className="flex items-center gap-3">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <span className="text-sm">AI 正在基于 ADD 方法推荐架构方案...</span>
-              </div>
+            <CardContent className="py-4 flex items-center gap-3">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <span className="text-sm">AI 正在基于 ADD 方法分析需求并推荐架构方案，请稍候...</span>
             </CardContent>
           </Card>
         )}
-        <Dialog open={isRecommendingOpen} onOpenChange={setIsRecommendingOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>AI 架构推荐</DialogTitle>
-              <DialogDescription>选择关注的质量属性，AI 将基于 ADD 方法为您推荐合适的架构方案</DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div>
-                <Label className="mb-3 block">关注的质量属性（可多选）</Label>
-                <div className="flex flex-wrap gap-2">
-                  {QUALITY_ATTRIBUTES.map((attr) => (
-                    <Badge key={attr} variant={selectedAttributes.includes(attr) ? "default" : "outline"} className="cursor-pointer" onClick={() => toggleAttribute(attr)}>{attr}</Badge>
-                  ))}
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground">不选择则使用默认质量属性进行推荐</p>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsRecommendingOpen(false)}>取消</Button>
-              <Button onClick={handleRecommend} disabled={isRecommending}>开始推荐</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+
+        {/* 统计概览 */}
+        {selectedProjectId && solutions.length > 0 && (
+          <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+            <Card><CardContent className="py-3">
+              <p className="text-xs text-muted-foreground">方案总数</p>
+              <p className="text-2xl font-bold">{solutions.length}</p>
+            </CardContent></Card>
+            <Card><CardContent className="py-3">
+              <p className="text-xs text-muted-foreground">已确认</p>
+              <p className="text-2xl font-bold text-green-600">{solutions.filter(s => s.status === "confirmed").length}</p>
+            </CardContent></Card>
+            <Card><CardContent className="py-3">
+              <p className="text-xs text-muted-foreground">待评审</p>
+              <p className="text-2xl font-bold text-yellow-600">{solutions.filter(s => s.status === "proposed").length}</p>
+            </CardContent></Card>
+            <Card><CardContent className="py-3">
+              <p className="text-xs text-muted-foreground">已评审</p>
+              <p className="text-2xl font-bold text-blue-600">{solutions.filter(s => ["selected", "reviewed"].includes(s.status)).length}</p>
+            </CardContent></Card>
+          </div>
+        )}
+
+        {/* 方案列表 */}
         {!selectedProjectId ? (
           <Card>
             <CardContent className="py-12 text-center">
@@ -863,20 +1220,54 @@ export default function ArchitecturesPage() {
         ) : solutions.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center">
-              <LayoutDashboard className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
+              <BrainCircuit className="h-12 w-12 text-muted-foreground/50 mx-auto mb-4" />
               <h3 className="text-lg font-semibold mb-2">暂无架构方案</h3>
-              <p className="text-muted-foreground">使用 AI 架构推荐功能自动生成架构方案</p>
-              <Button className="mt-4" onClick={() => setIsRecommendingOpen(true)}>
+              <p className="text-muted-foreground mb-4">使用 AI 架构推荐功能自动生成架构方案</p>
+              <Button onClick={() => setRecommendOpen(true)}>
                 <BrainCircuit className="mr-2 h-4 w-4" />AI 架构推荐
               </Button>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-4">
-            {solutions.map((sol) => (<ArchitectureDetailCard key={sol.id} solution={sol} projectId={selectedProjectId} />))}
+            {solutions.map((sol) => (
+              <ArchitectureDetailCard key={sol.id} solution={sol} projectId={selectedProjectId} />
+            ))}
           </div>
         )}
       </main>
+
+      {/* AI 推荐 Dialog */}
+      <Dialog open={recommendOpen} onOpenChange={setRecommendOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>AI 架构推荐</DialogTitle>
+            <DialogDescription>
+              选择关注的质量属性，AI 将基于 ADD 方法为您推荐合适的架构方案
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label className="mb-3 block">关注的质量属性（可多选）</Label>
+              <div className="flex flex-wrap gap-2">
+                {QUALITY_ATTRIBUTES.map((attr) => (
+                  <Badge key={attr} variant={selectedAttributes.includes(attr) ? "default" : "outline"}
+                    className="cursor-pointer select-none" onClick={() => toggleAttr(attr)}>
+                    {attr}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">不选择则使用默认质量属性进行推荐</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRecommendOpen(false)}>取消</Button>
+            <Button onClick={handleRecommend} disabled={isRecommending}>
+              {isRecommending ? "推荐中..." : "开始推荐"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

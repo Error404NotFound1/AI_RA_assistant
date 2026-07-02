@@ -1,10 +1,10 @@
 # Docker Compose - AI-SE-Assistant
-# 镜像加速配置（国内环境使用 docker.1ms.run 中转）
-# 如需更换镜像源，修改下方 IMAGE_REGISTRY 即可
+# 国内加速：在 .env.docker 填入阿里云镜像地址，运行 scripts/restart.ps1 配置 Docker 后拉取
+# 镜像名使用官方名称，由 Docker daemon 的 registry-mirrors 自动加速
 
 services:
   postgres:
-    image: docker.1ms.run/postgres:16-alpine
+    image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -20,7 +20,7 @@ services:
       retries: 5
 
   redis:
-    image: docker.1ms.run/redis:7-alpine
+    image: redis:7-alpine
     ports:
       - "6379:6379"
     volumes:
@@ -36,10 +36,11 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       args:
-        IMAGE_REGISTRY: docker.1ms.run
         PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
     ports:
       - "8000:8000"
+    env_file:
+      - ./backend/.env
     environment:
       POSTGRES_SERVER: postgres
       POSTGRES_PORT: 5432
@@ -61,7 +62,6 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        IMAGE_REGISTRY: docker.1ms.run
         NPM_REGISTRY: https://registry.npmmirror.com
     ports:
       - "3000:3000"

@@ -356,9 +356,10 @@ export const useArchitectureStore = create<ArchitectureState>((set, get) => ({
     set({ isGeneratingDoc: true });
     try {
       const response = await architectureAPI.generateArchDoc(projectId, solutionId);
-      const doc = response.data?.content ?? response.data ?? null;
-      set({ archDoc: typeof doc === "string" ? doc : JSON.stringify(doc, null, 2), isGeneratingDoc: false });
-      return typeof doc === "string" ? doc : JSON.stringify(doc, null, 2);
+      const doc = response.data?.document ?? response.data?.content ?? null;
+      const docText = typeof doc === "string" ? doc : doc ? JSON.stringify(doc, null, 2) : null;
+      set({ archDoc: docText, isGeneratingDoc: false });
+      return docText;
     } catch {
       set({ isGeneratingDoc: false });
       return null;

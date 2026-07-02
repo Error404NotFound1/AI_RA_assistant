@@ -1,7 +1,5 @@
 # AI-SE-Assistant Frontend Dockerfile
-# IMAGE_REGISTRY 由 docker-compose.yml 传入，默认 docker.io
-ARG IMAGE_REGISTRY=docker.io
-FROM ${IMAGE_REGISTRY}/node:22-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 

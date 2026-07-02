@@ -356,13 +356,13 @@ class AIReviewResponse(BaseModel):
     rating: int | None = None
     status: str
     created_at: datetime | None = None
-    # AI 分析详情
-    quality_assessment: dict | None = None
-    pattern_fitness: str | None = None
-    component_analysis: str | None = None
-    defects: list[str] | None = None
-    suggestions: list[str] | None = None
-    overall_rating: int | None = None
+    # AI 分析详情（LLM 可能返回字符串、对象或列表，保持宽松类型）
+    quality_assessment: dict | str | None = None
+    pattern_fitness: dict | str | None = None
+    component_analysis: list | dict | str | None = None
+    defects: list | None = None
+    suggestions: list | None = None
+    overall_rating: int | float | None = None
     summary: str | None = None
 
     model_config = {"from_attributes": True}

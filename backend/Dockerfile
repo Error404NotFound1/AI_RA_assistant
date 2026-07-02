@@ -1,7 +1,5 @@
 # AI-SE-Assistant Backend Dockerfile
-# IMAGE_REGISTRY 由 docker-compose.yml 传入，默认 docker.io
-ARG IMAGE_REGISTRY=docker.io
-FROM ${IMAGE_REGISTRY}/python:3.12-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 

@@ -66,11 +66,16 @@ interface DashboardStats {
 }
 
 interface StatisticsData {
-  ai_usage?: Array<{ action: string; count: number }>;
+  ai_usage?: {
+    total_calls: number;
+    by_action: Record<string, number>;
+  };
   requirement_coverage?: {
     total: number;
     analyzed: number;
-    coverage_rate: number;
+    confirmed: number;
+    analysis_coverage: number;
+    confirmation_rate: number;
   };
   structured_data?: {
     user_stories: number;
@@ -219,7 +224,12 @@ export default function AdminPage() {
           adminAPI.getStatistics().catch(() => null),
         ]);
         setUsers(usersRes.data);
-        setStats(dashboardRes.data);
+        setStats({
+          total_users: dashboardRes.data.user_count ?? 0,
+          total_projects: dashboardRes.data.project_count ?? 0,
+          total_requirements: dashboardRes.data.requirement_count ?? 0,
+          total_analyses: dashboardRes.data.ai_usage_count ?? 0,
+        });
         if (statsRes) setStatistics(statsRes.data);
       } catch {
         // 静默处理
@@ -336,10 +346,15 @@ export default function AdminPage() {
   };
 
   // 计算统计卡片数据
-  const aiUsageTotal = statistics?.ai_usage?.reduce((sum, item) => sum + item.count, 0) || 0;
-  const coverageRate = statistics?.requirement_coverage?.coverage_rate || 0;
-  const recommendCount = statistics?.ai_usage?.find((i) => i.action === "recommend")?.count || 0;
-  const docGenCount = statistics?.ai_usage?.find((i) => i.action === "generate_document")?.count || 0;
+  const aiUsageByAction = statistics?.ai_usage?.by_action ?? {};
+  const aiUsageTotal =
+    statistics?.ai_usage?.total_calls ??
+    Object.values(aiUsageByAction).reduce((sum, count) => sum + count, 0);
+  const coverageRate = statistics?.requirement_coverage?.analysis_coverage ?? 0;
+  const recommendCount = aiUsageByAction.recommend ?? 0;
+  const docGenCount =
+    (aiUsageByAction.generate_document ?? 0) +
+    (aiUsageByAction.generate_arch_doc ?? 0);
 
   const totalPages = Math.ceil(logsTotal / logsPageSize);
 
